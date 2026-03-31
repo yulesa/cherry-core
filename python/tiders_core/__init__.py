@@ -366,7 +366,9 @@ def evm_decode_events(
         A RecordBatch with one column per event parameter (both indexed and non-indexed).
         When ``hstack`` is True, original input columns are also included.
     """
-    return cc.evm_decode_events(signature, data, allow_decode_fail, filter_by_topic0, hstack)
+    return cc.evm_decode_events(
+        signature, data, allow_decode_fail, filter_by_topic0, hstack
+    )
 
 
 def evm_event_signature_to_arrow_schema(signature: str) -> pyarrow.Schema:

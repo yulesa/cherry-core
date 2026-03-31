@@ -5,7 +5,7 @@ edition = "2021"
 description = "Library for ingesting evm data using common a query/response format"
 homepage = "https://github.com/yulesa/tiders-core"
 repository = "https://github.com/yulesa/tiders-core"
-authors = ["Ozgur Akkurt <oezgurmakkurt@gmail.com>"]
+authors = ["Yulesa <yulesa@gmail.com>", "Ozgur Akkurt <oezgurmakkurt@gmail.com>"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]

@@ -10,14 +10,17 @@
 
 #![allow(clippy::manual_div_ceil)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use arrow::{
     array::{
-        builder, Array, BinaryArray, Decimal256Array, GenericBinaryArray, GenericStringArray,
-        LargeBinaryArray, OffsetSizeTrait, RecordBatch,
+        builder, make_array, Array, BinaryArray, Decimal256Array, FixedSizeListArray,
+        GenericBinaryArray, GenericStringArray, Int32Array, LargeBinaryArray, OffsetSizeTrait,
+        RecordBatch, StructArray,
     },
+    buffer::NullBuffer,
     compute::CastOptions,
     datatypes::{DataType, Field, Schema},
 };
@@ -479,6 +482,168 @@ pub fn u256_to_binary(data: &RecordBatch) -> Result<RecordBatch> {
     }
 
     RecordBatch::try_new(Arc::new(schema), columns).context("construct arrow batch")
+}
+
+/// Flattens all `Struct` columns in a RecordBatch into top-level columns,
+/// dot-joining names as it recurses.
+///
+/// - `Struct(a, b)` with name `foo` → columns `foo.a`, `foo.b`
+/// - `FixedSizeList(n, Struct(...))` with name `foo` → columns `foo.0`, `foo.1`, … `foo.n-1`,
+///   each further expanded if the struct has fields
+/// - `List(Struct(...))` with name `foo` → single `foo` column serialised to UTF-8 string
+/// - Any other type is emitted unchanged
+///
+/// When two expanded names collide the second occurrence is renamed `name_1`, the third
+/// `name_2`, and so on (the first occurrence keeps its original name).
+pub fn flatten_record_batch(batch: &RecordBatch) -> Result<RecordBatch> {
+    let mut out_fields: Vec<Arc<Field>> = Vec::new();
+    let mut out_arrays: Vec<Arc<dyn Array>> = Vec::new();
+
+    for (field, col) in batch.schema().fields().iter().zip(batch.columns()) {
+        expand_column(field.name(), col, &mut out_fields, &mut out_arrays)?;
+    }
+
+    resolve_name_collisions(&mut out_fields);
+
+    RecordBatch::try_new(Arc::new(Schema::new(out_fields)), out_arrays)
+        .context("construct flattened batch")
+}
+
+/// Schema-only mirror of [`flatten_record_batch`].
+pub fn flatten_schema(schema: &Schema) -> Schema {
+    let mut out_fields: Vec<Arc<Field>> = Vec::new();
+
+    for field in schema.fields() {
+        expand_field(field.name(), field.data_type(), &mut out_fields);
+    }
+
+    resolve_name_collisions(&mut out_fields);
+
+    Schema::new(out_fields)
+}
+
+fn expand_column(
+    name: &str,
+    col: &Arc<dyn Array>,
+    out_fields: &mut Vec<Arc<Field>>,
+    out_arrays: &mut Vec<Arc<dyn Array>>,
+) -> Result<()> {
+    match col.data_type() {
+        DataType::Struct(inner_fields) => {
+            let struct_arr = col
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .context("downcast to StructArray")?;
+            for (i, inner_field) in inner_fields.iter().enumerate() {
+                let child = struct_arr.column(i).clone();
+                let child = propagate_nulls(col.nulls(), child);
+                expand_column(
+                    &format!("{}.{}", name, inner_field.name()),
+                    &child,
+                    out_fields,
+                    out_arrays,
+                )?;
+            }
+        }
+        DataType::FixedSizeList(inner_field, n)
+            if matches!(inner_field.data_type(), DataType::Struct(_)) =>
+        {
+            let n = *n as usize;
+            let list_arr = col
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .context("downcast to FixedSizeListArray")?;
+            let values = list_arr.values();
+            let num_rows = list_arr.len();
+
+            for i in 0..n {
+                let indices: Int32Array = (0..num_rows).map(|r| (r * n + i) as i32).collect();
+                let element = arrow::compute::take(values.as_ref(), &indices, None)
+                    .context("take element from FixedSizeList")?;
+                let element = propagate_nulls(list_arr.nulls(), element);
+                expand_column(&format!("{}.{}", name, i), &element, out_fields, out_arrays)?;
+            }
+        }
+        DataType::List(inner_field) if matches!(inner_field.data_type(), DataType::Struct(_)) => {
+            let str_col = arrow::compute::cast_with_options(
+                col.as_ref(),
+                &DataType::Utf8,
+                &CastOptions { safe: true, ..Default::default() },
+            )
+            .context("cast List<Struct> to Utf8")?;
+            out_fields.push(Arc::new(Field::new(name, DataType::Utf8, true)));
+            out_arrays.push(str_col);
+        }
+        _ => {
+            out_fields.push(Arc::new(Field::new(name, col.data_type().clone(), true)));
+            out_arrays.push(col.clone());
+        }
+    }
+    Ok(())
+}
+
+fn expand_field(name: &str, dtype: &DataType, out: &mut Vec<Arc<Field>>) {
+    match dtype {
+        DataType::Struct(inner_fields) => {
+            for f in inner_fields.iter() {
+                expand_field(&format!("{}.{}", name, f.name()), f.data_type(), out);
+            }
+        }
+        DataType::FixedSizeList(inner_field, n)
+            if matches!(inner_field.data_type(), DataType::Struct(_)) =>
+        {
+            for i in 0..(*n as usize) {
+                expand_field(&format!("{}.{}", name, i), inner_field.data_type(), out);
+            }
+        }
+        DataType::List(inner_field) if matches!(inner_field.data_type(), DataType::Struct(_)) => {
+            out.push(Arc::new(Field::new(name, DataType::Utf8, true)));
+        }
+        _ => {
+            out.push(Arc::new(Field::new(name, dtype.clone(), true)));
+        }
+    }
+}
+
+/// Merges the parent's null buffer into a child array so that rows null in the
+/// parent are also null in the child.
+fn propagate_nulls(parent_nulls: Option<&NullBuffer>, col: Arc<dyn Array>) -> Arc<dyn Array> {
+    let Some(parent_nulls) = parent_nulls else {
+        return col;
+    };
+    let merged = NullBuffer::union(Some(parent_nulls), col.nulls());
+    let null_count = merged.as_ref().map_or(0, NullBuffer::null_count);
+    let data = col.into_data();
+    // SAFETY: only the null buffer changes; values and offsets are untouched.
+    let new_data = unsafe {
+        data.into_builder()
+            .null_bit_buffer(merged.map(|nb| nb.into_inner().into_inner()))
+            .null_count(null_count)
+            .build_unchecked()
+    };
+    make_array(new_data)
+}
+
+/// Renames duplicate field names: the first occurrence keeps its name, subsequent
+/// ones become `name_1`, `name_2`, etc.
+fn resolve_name_collisions(fields: &mut Vec<Arc<Field>>) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for f in fields.iter() {
+        *counts.entry(f.name().clone()).or_insert(0) += 1;
+    }
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for field in fields.iter_mut() {
+        let name = field.name().clone();
+        if *counts.get(&name).unwrap_or(&0) > 1 {
+            let idx = seen.entry(name.clone()).or_insert(0);
+            if *idx > 0 {
+                let new_name = format!("{}_{}", name, idx);
+                *field =
+                    Arc::new(Field::new(new_name, field.data_type().clone(), field.is_nullable()));
+            }
+            *idx += 1;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -273,13 +273,16 @@ pub fn decode_events(
     }
 
     let output_schema = Schema::new(fields);
-    RecordBatch::try_new(Arc::new(output_schema), arrays).context("construct arrow batch")
+    let batch =
+        RecordBatch::try_new(Arc::new(output_schema), arrays).context("construct arrow batch")?;
+    tiders_cast::flatten_record_batch(&batch).context("flatten decoded batch")
 }
 
 /// Returns the Arrow schema that [`decode_events`] would produce for the given event signature.
 pub fn event_signature_to_arrow_schema(signature: &str) -> Result<Schema> {
     let (event, _) = resolve_event_signature(signature)?;
-    event_signature_to_arrow_schema_impl(&event)
+    let schema = event_signature_to_arrow_schema_impl(&event)?;
+    Ok(tiders_cast::flatten_schema(&schema))
 }
 
 /// Builds the Arrow schema for an event directly from its [`alloy_json_abi::Event`].
@@ -474,6 +477,182 @@ mod tests {
             result.column_by_name("topic0").is_some(),
             "hstack should include original input columns"
         );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_decode_events_named_tuple_via_abi_json() {
+        use arrow::array::{BinaryArray, Decimal128Array, GenericBinaryBuilder};
+
+        // JSON ABI fragment with:
+        //  - a nested static tuple (premiumDelta.breakdown) → tests two-level struct recursion
+        //  - a variable-length tuple array (rewards: tuple[]) → tests List<Struct> → Utf8
+        let abi_json = r#"{
+            "type": "event",
+            "name": "RefreshPremium",
+            "inputs": [
+                {"name": "assetId", "type": "uint256", "indexed": true, "components": []},
+                {"name": "spoke",   "type": "address", "indexed": true, "components": []},
+                {"name": "premiumDelta", "type": "tuple", "indexed": false, "components": [
+                    {"name": "sharesDelta",    "type": "int256", "components": []},
+                    {"name": "offsetRayDelta", "type": "int256", "components": []},
+                    {"name": "breakdown", "type": "tuple", "components": [
+                        {"name": "base",  "type": "uint128", "components": []},
+                        {"name": "bonus", "type": "uint128", "components": []}
+                    ]}
+                ]},
+                {"name": "rewards", "type": "tuple[]", "indexed": false, "components": [
+                    {"name": "token",  "type": "address", "components": []},
+                    {"name": "amount", "type": "uint256", "components": []}
+                ]}
+            ],
+            "anonymous": false
+        }"#;
+
+        let asset_id = U256::from(42u64);
+        let spoke_addr = [1u8; 20];
+        let shares_delta = I256::try_from(-100i64).unwrap();
+        let offset_ray_delta = I256::try_from(200i64).unwrap();
+        let base: u128 = 500;
+        let bonus: u128 = 999;
+        let reward_token_0 = [2u8; 20];
+        let reward_amount_0 = U256::from(1000u64);
+        let reward_token_1 = [3u8; 20];
+        let reward_amount_1 = U256::from(2000u64);
+
+        // topic1: uint256 → 32-byte big-endian
+        let topic1 = asset_id.to_be_bytes::<32>();
+
+        // topic2: address → left-padded to 32 bytes
+        let mut topic2 = [0u8; 32];
+        topic2[12..].copy_from_slice(&spoke_addr);
+
+        // Body: ABI-encoded sequence (premiumDelta, rewards).
+        // premiumDelta is static (4 × 32 = 128 bytes); rewards is dynamic (tuple[]).
+        // ABI head/tail layout:
+        //   [0..128]   premiumDelta inline (4 words)
+        //   [128..160] offset for rewards = 160 (start of tail, relative to head start)
+        //   [160..192] rewards array length = 2
+        //   [192..256] rewards[0]: token (32 bytes) + amount (32 bytes)
+        //   [256..320] rewards[1]: token (32 bytes) + amount (32 bytes)
+        let premiumdelta_word_count: u64 = 4; // sharesDelta + offsetRayDelta + base + bonus
+        let head_size: u64 = premiumdelta_word_count * 32 + 32; // +32 for rewards offset word
+        let mut body = Vec::new();
+        // premiumDelta fields (static, encoded inline in the head)
+        body.extend_from_slice(&shares_delta.to_be_bytes::<32>());
+        body.extend_from_slice(&offset_ray_delta.to_be_bytes::<32>());
+        body.extend_from_slice(&U256::from(base).to_be_bytes::<32>());
+        body.extend_from_slice(&U256::from(bonus).to_be_bytes::<32>());
+        // offset pointing to the start of rewards tail data
+        body.extend_from_slice(&U256::from(head_size).to_be_bytes::<32>());
+        // rewards tail: length + elements
+        body.extend_from_slice(&U256::from(2u64).to_be_bytes::<32>());
+        let mut reward_token_0_padded = [0u8; 32];
+        reward_token_0_padded[12..].copy_from_slice(&reward_token_0);
+        body.extend_from_slice(&reward_token_0_padded);
+        body.extend_from_slice(&reward_amount_0.to_be_bytes::<32>());
+        let mut reward_token_1_padded = [0u8; 32];
+        reward_token_1_padded[12..].copy_from_slice(&reward_token_1);
+        body.extend_from_slice(&reward_token_1_padded);
+        body.extend_from_slice(&reward_amount_1.to_be_bytes::<32>());
+
+        let selector = abi_to_topic0(abi_json).unwrap();
+
+        let mut topic0_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic1_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic2_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic3_b = GenericBinaryBuilder::<i32>::new();
+        let mut data_b = GenericBinaryBuilder::<i32>::new();
+
+        topic0_b.append_value(selector);
+        topic1_b.append_value(topic1);
+        topic2_b.append_value(topic2);
+        topic3_b.append_null();
+        data_b.append_value(&body);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("topic0", DataType::Binary, true),
+            Field::new("topic1", DataType::Binary, true),
+            Field::new("topic2", DataType::Binary, true),
+            Field::new("topic3", DataType::Binary, true),
+            Field::new("data",   DataType::Binary, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(topic0_b.finish()),
+                Arc::new(topic1_b.finish()),
+                Arc::new(topic2_b.finish()),
+                Arc::new(topic3_b.finish()),
+                Arc::new(data_b.finish()),
+            ],
+        )
+        .unwrap();
+
+        let result = decode_events(abi_json, &batch, false, false, false).unwrap();
+
+        assert_eq!(result.num_rows(), 1);
+
+        // Output must be fully flat — no Struct columns survive
+        for field in result.schema().fields() {
+            assert!(
+                !matches!(field.data_type(), DataType::Struct(_)),
+                "field '{}' should not be Struct after flattening",
+                field.name()
+            );
+        }
+
+        // Indexed params are top-level; nested tuple fields are dot-joined two levels deep;
+        // tuple[] is flattened to a single Utf8 column (variable-length → serialised).
+        let out_schema = result.schema();
+        assert!(out_schema.field_with_name("assetId").is_ok());
+        assert!(out_schema.field_with_name("spoke").is_ok());
+        assert!(out_schema.field_with_name("premiumDelta.sharesDelta").is_ok());
+        assert!(out_schema.field_with_name("premiumDelta.offsetRayDelta").is_ok());
+        assert!(out_schema.field_with_name("premiumDelta.breakdown.base").is_ok());
+        assert!(out_schema.field_with_name("premiumDelta.breakdown.bonus").is_ok());
+        assert_eq!(
+            out_schema.field_with_name("rewards").unwrap().data_type(),
+            &DataType::Utf8,
+            "variable-length tuple[] should be serialised to Utf8"
+        );
+
+        // Print the human-readable signature derived from the JSON ABI fragment
+        let event: alloy_json_abi::Event = serde_json::from_str(abi_json).unwrap();
+        println!("Human-readable signature: {}", event.full_signature());
+
+        // Print the serialised rewards string (List<Struct> → Utf8)
+        use arrow::array::StringArray;
+        let rewards_col = result
+            .column_by_name("rewards").unwrap()
+            .as_any().downcast_ref::<StringArray>().unwrap();
+        println!("rewards[0]: {}", rewards_col.value(0));
+
+        // spoke: address decodes to 20 raw bytes
+        let spoke_col = result
+            .column_by_name("spoke").unwrap()
+            .as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert_eq!(spoke_col.value(0), spoke_addr);
+
+        // breakdown.base and breakdown.bonus: uint128 → Decimal128(38, 0)
+        let base_col = result
+            .column_by_name("premiumDelta.breakdown.base").unwrap()
+            .as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(base_col.value(0), base as i128);
+
+        let bonus_col = result
+            .column_by_name("premiumDelta.breakdown.bonus").unwrap()
+            .as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(bonus_col.value(0), bonus as i128);
+
+        // Save decoded batch to parquet in the crate root
+        use parquet::arrow::ArrowWriter;
+        use std::fs::File;
+        let file = File::create("refresh_premium_decoded.parquet").unwrap();
+        let mut writer = ArrowWriter::try_new(file, result.schema(), None).unwrap();
+        writer.write(&result).unwrap();
+        writer.close().unwrap();
     }
 
     #[test]

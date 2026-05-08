@@ -6,8 +6,8 @@ use alloy_primitives::{I256, U256};
 use anyhow::{anyhow, Context, Result};
 use arrow::{
     array::{
-        builder, Array, ArrowPrimitiveType, BooleanArray, GenericBinaryArray, ListArray,
-        OffsetSizeTrait, RecordBatch, StructArray,
+        builder, Array, ArrowPrimitiveType, BooleanArray, FixedSizeListArray, GenericBinaryArray,
+        ListArray, OffsetSizeTrait, RecordBatch, StructArray,
     },
     buffer::{NullBuffer, OffsetBuffer},
     datatypes::{
@@ -28,9 +28,16 @@ pub(crate) fn to_arrow_dtype(sol_type: &DynSolType) -> Result<DataType> {
         DynSolType::String => Ok(DataType::Utf8),
         DynSolType::Int(num_bits) => Ok(num_bits_to_int_type(*num_bits)),
         DynSolType::Uint(num_bits) => Ok(num_bits_to_uint_type(*num_bits)),
-        DynSolType::Array(inner_type) | DynSolType::FixedArray(inner_type, _) => {
+        DynSolType::Array(inner_type) => {
             let inner_type = to_arrow_dtype(inner_type).context("map inner")?;
             Ok(DataType::List(Arc::new(Field::new("", inner_type, true))))
+        }
+        DynSolType::FixedArray(inner_type, n) => {
+            let inner_type = to_arrow_dtype(inner_type).context("map inner")?;
+            Ok(DataType::FixedSizeList(
+                Arc::new(Field::new("", inner_type, true)),
+                *n as i32,
+            ))
         }
         DynSolType::Function => Err(anyhow!(
             "decoding 'Function' typed value in function signature isn't supported."
@@ -133,8 +140,9 @@ pub(crate) fn to_arrow(
         DynSolType::String => to_string(&sol_values),
         DynSolType::Int(num_bits) => to_int(*num_bits, &sol_values, allow_decode_fail),
         DynSolType::Uint(num_bits) => to_uint(*num_bits, &sol_values, allow_decode_fail),
-        DynSolType::Array(inner_type) | DynSolType::FixedArray(inner_type, _) => {
-            to_list(inner_type, sol_values, allow_decode_fail)
+        DynSolType::Array(inner_type) => to_list(inner_type, sol_values, allow_decode_fail),
+        DynSolType::FixedArray(inner_type, n) => {
+            to_fixed_list(inner_type, *n, sol_values, allow_decode_fail)
         }
         DynSolType::Function => Err(anyhow!(
             "decoding 'Function' typed value in function signature isn't supported."
@@ -396,6 +404,57 @@ fn to_list(
         },
     )
     .context("construct list array")?;
+    Ok(Arc::new(list_arr))
+}
+
+fn to_fixed_list(
+    sol_type: &DynSolType,
+    n: usize,
+    sol_values: Vec<Option<DynSolValue>>,
+    allow_decode_fail: bool,
+) -> Result<Arc<dyn Array>> {
+    let mut values = Vec::with_capacity(sol_values.len() * n);
+    let mut validity = Vec::with_capacity(sol_values.len());
+    let mut all_valid = true;
+
+    for val in sol_values {
+        match val {
+            Some(DynSolValue::FixedArray(inner_vals)) => {
+                if inner_vals.len() != n {
+                    return Err(anyhow!(
+                        "fixed array length mismatch: expected {n}, got {}",
+                        inner_vals.len()
+                    ));
+                }
+                values.extend(inner_vals.into_iter().map(Some));
+                validity.push(true);
+            }
+            Some(other) => {
+                return Err(anyhow!(
+                    "found unexpected value. Expected: FixedArray, Found: {other:?}"
+                ));
+            }
+            None => {
+                for _ in 0..n {
+                    values.push(None);
+                }
+                validity.push(false);
+                all_valid = false;
+            }
+        }
+    }
+
+    let inner_values = to_arrow(sol_type, values, allow_decode_fail).context("map inner")?;
+    let field = Arc::new(Field::new(
+        "",
+        to_arrow_dtype(sol_type).context("construct data type")?,
+        true,
+    ));
+    let null_buf = if all_valid { None } else { Some(NullBuffer::from(validity)) };
+
+    let list_arr =
+        FixedSizeListArray::try_new(field, n as i32, inner_values, null_buf)
+            .context("construct fixed size list array")?;
     Ok(Arc::new(list_arr))
 }
 

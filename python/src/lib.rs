@@ -81,6 +81,7 @@ fn tiders_core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EvmAbiFunction>()?;
     m.add_function(wrap_pyfunction!(evm_abi_events, m)?)?;
     m.add_function(wrap_pyfunction!(evm_abi_functions, m)?)?;
+    m.add_function(wrap_pyfunction!(flatten_batch, m)?)?;
     m.add_function(wrap_pyfunction!(base58_encode_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(base58_decode_string, m)?)?;
     ingest::ingest_module(py, m)?;
@@ -619,6 +620,15 @@ fn evm_abi_functions(json_str: &str) -> PyResult<Vec<EvmAbiFunction>> {
             abi_json: f.abi_json,
         })
         .collect())
+}
+
+#[pyfunction]
+fn flatten_batch(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+    let batch = RecordBatch::from_pyarrow_bound(batch).context("convert batch from pyarrow")?;
+
+    let batch = baselib::cast::flatten_record_batch(&batch).context("flatten batch")?;
+
+    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
 }
 
 #[pyfunction]

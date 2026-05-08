@@ -218,6 +218,27 @@ def u256_column_to_binary(col: pyarrow.Array) -> pyarrow.Array:
     return cc.u256_column_to_binary(col)
 
 
+def flatten_batch(data: pyarrow.RecordBatch) -> pyarrow.RecordBatch:
+    """Flatten all Struct columns in a RecordBatch into top-level columns.
+
+    Recurses into nested Struct types, dot-joining names at each level.
+    ``FixedSizeList(n, Struct(...))`` expands to n columns named ``parent.0``,
+    ``parent.1``, … each further expanded if they contain structs.
+    ``List(Struct(...))`` (variable-length) is serialised to a UTF-8 string column.
+    All other column types are passed through unchanged.
+
+    When two expanded names collide, the second occurrence is renamed ``name_1``,
+    the third ``name_2``, and so on (the first occurrence keeps its original name).
+
+    Args:
+        data: A RecordBatch potentially containing nested Struct columns.
+
+    Returns:
+        A new RecordBatch with all Struct columns expanded to top-level columns.
+    """
+    return cc.flatten_batch(data)
+
+
 def u256_to_binary(data: pyarrow.RecordBatch) -> pyarrow.RecordBatch:
     """Convert all Decimal256 columns in a RecordBatch to binary.
 

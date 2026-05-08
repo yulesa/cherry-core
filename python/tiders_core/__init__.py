@@ -403,7 +403,7 @@ def evm_signature_to_topic0(signature: str) -> str:
     """Compute the topic0 (keccak256 hash) for an EVM event signature.
 
     Args:
-        signature: The Solidity event signature
+        signature: The human-readable Solidity event signature
             (e.g. ``"Transfer(address,address,uint256)"``).
 
     Returns:
@@ -412,18 +412,34 @@ def evm_signature_to_topic0(signature: str) -> str:
     return cc.evm_signature_to_topic0(signature)
 
 
+def evm_abi_to_topic0(abi_json: str) -> str:
+    """Compute the topic0 (keccak256 hash) from a JSON ABI fragment for an event.
+
+    Args:
+        abi_json: A JSON ABI fragment string for a single event
+            (e.g. the ``abi_json`` field from :func:`evm_abi_events`).
+
+    Returns:
+        The ``0x``-prefixed hex-encoded keccak256 hash of the event signature.
+    """
+    return cc.evm_abi_to_topic0(abi_json)
+
+
 class EvmAbiEvent:
     """Parsed event info extracted from a JSON ABI.
 
     Attributes:
         name: Event name (e.g. ``"Swap"``).
         name_snake_case: Event name in snake_case (e.g. ``"swap"``).
-        signature: Human-readable signature with names and indexed markers
-            (e.g. ``"Swap(address indexed sender, address indexed recipient, int256 amount0, ...)"``).
+        signature: Human-readable signature with outer param names and indexed markers
+            but unnamed tuple components
+            (e.g. ``"Swap(address indexed sender, (int256,int256) data)"``).
             Can be passed directly to :func:`evm_decode_events`.
         selector_signature: Canonical selector signature without names
             (e.g. ``"Swap(address,address,int256,int256,uint160,uint128,int24)"``).
         topic0: topic0 as ``0x``-prefixed hex string.
+        abi_json: Full JSON ABI fragment preserving all component names.
+            Can be passed to :func:`evm_abi_to_topic0` or :func:`evm_decode_events`.
     """
 
     name: str
@@ -431,6 +447,7 @@ class EvmAbiEvent:
     signature: str
     selector_signature: str
     topic0: str
+    abi_json: str
 
 
 class EvmAbiFunction:
@@ -444,6 +461,7 @@ class EvmAbiFunction:
         selector_signature: Canonical selector signature without names
             (e.g. ``"swap(address,bool,int256,uint160,bytes)"``).
         selector: 4-byte selector as ``0x``-prefixed hex string.
+        abi_json: Full JSON ABI fragment preserving all parameter names.
     """
 
     name: str
@@ -451,6 +469,7 @@ class EvmAbiFunction:
     signature: str
     selector_signature: str
     selector: str
+    abi_json: str
 
 
 def evm_abi_events(json_str: str) -> list[EvmAbiEvent]:
@@ -462,7 +481,8 @@ def evm_abi_events(json_str: str) -> list[EvmAbiEvent]:
     Returns:
         A list of :class:`EvmAbiEvent` objects, one per event in the ABI.
         Each contains the event name, human-readable signature (suitable for
-        :func:`evm_decode_events`), canonical selector signature, and topic0 hash.
+        :func:`evm_decode_events`), canonical selector signature, topic0 hash,
+        and a full JSON ABI fragment (suitable for :func:`evm_abi_to_topic0`).
     """
     return cc.evm_abi_events(json_str)
 

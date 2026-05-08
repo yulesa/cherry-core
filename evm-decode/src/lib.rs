@@ -32,11 +32,23 @@ use arrow::{
 };
 
 pub use abi::*;
-use arrow_convert::{build_topic0_mask, decode_body, decode_topic, to_arrow, to_arrow_dtype};
+use arrow_convert::{
+    build_topic0_mask, decode_body_named, decode_topic, param_to_arrow_dtype, to_arrow,
+    to_arrow_dtype,
+};
 
-/// Returns topic0 based on given event signature
+/// Returns topic0 based on a human-readable Solidity event signature
+/// (e.g. `"Transfer(address indexed,address indexed,uint256)"`).
 pub fn signature_to_topic0(signature: &str) -> Result<[u8; 32]> {
     let event = alloy_json_abi::Event::parse(signature).context("parse event signature")?;
+    Ok(event.selector().into())
+}
+
+/// Returns topic0 based on a JSON ABI fragment for an event
+/// (e.g. the `abi_json` field from [`crate::abi_events`]).
+pub fn abi_to_topic0(abi_json: &str) -> Result<[u8; 32]> {
+    let event: alloy_json_abi::Event =
+        serde_json::from_str(abi_json).context("parse event ABI JSON")?;
     Ok(event.selector().into())
 }
 
@@ -202,7 +214,7 @@ pub fn decode_events(
         data.clone()
     };
 
-    let schema = event_signature_to_arrow_schema_impl(&event, &resolved)
+    let schema = event_signature_to_arrow_schema_impl(&event)
         .context("convert event signature to arrow schema")?;
 
     let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
@@ -233,21 +245,24 @@ pub fn decode_events(
     }
 
     let body_col = data.column_by_name("data").context("get data column")?;
-
     let body_sol_type = DynSolType::Tuple(resolved.body().to_vec());
+    let body_params: Vec<&alloy_json_abi::EventParam> =
+        event.inputs.iter().filter(|i| !i.indexed).collect();
 
     if body_col.data_type() == &DataType::Binary {
         let arr = body_col
             .as_any()
             .downcast_ref::<BinaryArray>()
             .context("downcast to BinaryArray")?;
-        decode_body(&body_sol_type, arr, allow_decode_fail, &mut arrays).context("decode body")?;
+        decode_body_named(&body_sol_type, &body_params, arr, allow_decode_fail, &mut arrays)
+            .context("decode body")?;
     } else if body_col.data_type() == &DataType::LargeBinary {
         let arr = body_col
             .as_any()
             .downcast_ref::<LargeBinaryArray>()
             .context("downcast to LargeBinaryArray")?;
-        decode_body(&body_sol_type, arr, allow_decode_fail, &mut arrays).context("decode body")?;
+        decode_body_named(&body_sol_type, &body_params, arr, allow_decode_fail, &mut arrays)
+            .context("decode body")?;
     }
 
     if hstack {
@@ -263,51 +278,74 @@ pub fn decode_events(
 
 /// Returns the Arrow schema that [`decode_events`] would produce for the given event signature.
 pub fn event_signature_to_arrow_schema(signature: &str) -> Result<Schema> {
-    let (resolved, event) = resolve_event_signature(signature)?;
-    event_signature_to_arrow_schema_impl(&resolved, &event)
+    let (event, _) = resolve_event_signature(signature)?;
+    event_signature_to_arrow_schema_impl(&event)
 }
 
-fn event_signature_to_arrow_schema_impl(
-    sig: &alloy_json_abi::Event,
-    event: &DynSolEvent,
-) -> Result<Schema> {
-    let num_fields = event.indexed().len() + event.body().len();
-    let mut fields = Vec::<Arc<Field>>::with_capacity(num_fields);
-    let mut names = Vec::with_capacity(num_fields);
+/// Builds the Arrow schema for an event directly from its [`alloy_json_abi::Event`].
+///
+/// Indexed params come first (matching the topic decode order), followed by
+/// body params. Tuple params use [`param_to_arrow_dtype`] so component names
+/// are preserved as named `Struct` fields.
+fn event_signature_to_arrow_schema_impl(sig: &alloy_json_abi::Event) -> Result<Schema> {
+    let mut fields = Vec::<Arc<Field>>::new();
 
     for (i, input) in sig.inputs.iter().enumerate() {
         if input.indexed {
-            let name = if input.name.is_empty() {
-                format!("param{i}")
-            } else {
-                input.name.clone()
-            };
-            names.push(name);
+            let name =
+                if input.name.is_empty() { format!("param{i}") } else { input.name.clone() };
+            let dtype = param_to_arrow_dtype(&input.ty, &input.components)
+                .context("map indexed param to arrow type")?;
+            fields.push(Arc::new(Field::new(name, dtype, true)));
         }
     }
     for (i, input) in sig.inputs.iter().enumerate() {
         if !input.indexed {
-            let name = if input.name.is_empty() {
-                format!("param{i}")
-            } else {
-                input.name.clone()
-            };
-            names.push(name);
+            let name =
+                if input.name.is_empty() { format!("param{i}") } else { input.name.clone() };
+            let dtype = param_to_arrow_dtype(&input.ty, &input.components)
+                .context("map body param to arrow type")?;
+            fields.push(Arc::new(Field::new(name, dtype, true)));
         }
-    }
-
-    for (sol_t, name) in event.indexed().iter().chain(event.body()).zip(names) {
-        let dtype = to_arrow_dtype(sol_t).context("map to arrow type")?;
-        fields.push(Arc::new(Field::new(name, dtype, true)));
     }
 
     Ok(Schema::new(fields))
 }
 
-fn resolve_event_signature(signature: &str) -> Result<(alloy_json_abi::Event, DynSolEvent)> {
-    let event = alloy_json_abi::Event::parse(signature).context("parse event signature")?;
-    let resolved = event.resolve().context("resolve event signature")?;
+/// Parse an event from either a human-readable Solidity signature or a JSON
+/// fragment (the format produced by [`crate::abi_events`]).
+///
+/// Accepts three formats:
+/// - JSON ABI fragment: `{"type":"event","name":"Swap","inputs":[...],...}`
+/// - Standard HR signature: `Swap(address indexed sender, uint256 amount)`
+/// - Full HR signature with named tuple fields (alloy `full_signature()` output):
+///   `Swap(address indexed sender, tuple(int256 a, int256 b) data)` — alloy's
+///   `Event::parse` rejects named types inside tuple parens, so we parse this
+///   ourselves, build a JSON value, and deserialise to preserve component names.
+fn parse_event_str(signature: &str) -> Result<alloy_json_abi::Event> {
+    if signature.starts_with('{') {
+        return serde_json::from_str(signature).context("parse event JSON");
+    }
+    if signature.contains("tuple(") {
+        log::warn!(
+            "Event signature contains `tuple(...)` which will produce unnamed fields in the Arrow schema. \
+             Consider passing a JSON ABI fragment instead.\n  \
+             Signature: {signature}"
+        );
+    }
+    alloy_json_abi::Event::parse(signature).map_err(|e| {
+        anyhow!(
+            "{e}\n  \
+             Hint: if the signature contains named tuple fields (e.g. `tuple(int256 foo, ...)`),\n  \
+             either strip the inner names (e.g. `(int256,...)`) or pass a JSON ABI fragment."
+        )
+    })
+}
 
+/// Find the index of the closing `)` that matches the `(` at `open`.
+fn resolve_event_signature(signature: &str) -> Result<(alloy_json_abi::Event, DynSolEvent)> {
+    let event = parse_event_str(signature)?;
+    let resolved = event.resolve().context("resolve event signature")?;
     Ok((event, resolved))
 }
 

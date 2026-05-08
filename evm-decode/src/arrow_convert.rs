@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use alloy_dyn_abi::{DynSolType, DynSolValue};
+use alloy_dyn_abi::{DynSolType, DynSolValue, Specifier};
+use alloy_json_abi::{EventParam, Param};
 use alloy_primitives::{I256, U256};
 use anyhow::{anyhow, Context, Result};
 use arrow::{
@@ -44,6 +45,36 @@ pub(crate) fn to_arrow_dtype(sol_type: &DynSolType) -> Result<DataType> {
 
             Ok(DataType::Struct(Fields::from(arrow_fields)))
         }
+    }
+}
+
+/// Like [`to_arrow_dtype`] but uses [`Param`] component names for tuple fields.
+///
+/// For a plain `tuple` type the components are mapped to a named Arrow `Struct`.
+/// For arrays of tuples (`tuple[]`, `tuple[N]`) the component names are not
+/// preserved in the inner type — they fall through to [`to_arrow_dtype`] so the
+/// schema and the data arrays produced by [`decode_body_named`] remain consistent.
+pub(crate) fn param_to_arrow_dtype(ty: &str, components: &[Param]) -> Result<DataType> {
+    if ty == "tuple" && !components.is_empty() {
+        let fields = components
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let inner = param_to_arrow_dtype(&c.ty, &c.components)?;
+                let name = if c.name.is_empty() { format!("param{i}") } else { c.name.clone() };
+                Ok(Arc::new(Field::new(name, inner, true)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DataType::Struct(Fields::from(fields)))
+    } else if !components.is_empty() {
+        // Array-of-tuple or other complex type: use DynSolType resolution so the
+        // schema matches the unnamed fields produced by to_arrow / to_struct.
+        let p = Param { ty: ty.to_string(), name: String::new(), components: components.to_vec(), internal_type: None };
+        let sol_type = p.resolve().map_err(|e| anyhow!("{e}"))?;
+        to_arrow_dtype(&sol_type)
+    } else {
+        let sol_type = DynSolType::parse(ty).map_err(|e| anyhow!("{e}"))?;
+        to_arrow_dtype(&sol_type)
     }
 }
 
@@ -514,6 +545,78 @@ fn to_string(sol_values: &[Option<DynSolValue>]) -> Result<Arc<dyn Array>> {
     Ok(Arc::new(builder.finish()))
 }
 
+/// Like [`to_struct`] but accepts `(name, components)` per field so that
+/// tuple sub-fields are named from their [`Param`] components rather than
+/// falling back to `param0`, `param1`, …
+fn to_struct_named(
+    fields: &[DynSolType],
+    named: &[(&str, &[Param])],
+    sol_values: Vec<Option<DynSolValue>>,
+    allow_decode_fail: bool,
+) -> Result<Arc<dyn Array>> {
+    if fields.is_empty() {
+        return Ok(Arc::new(StructArray::new_empty_fields(sol_values.len(), None)));
+    }
+
+    let mut per_field = vec![Vec::with_capacity(sol_values.len()); fields.len()];
+
+    for val in sol_values {
+        match val {
+            Some(DynSolValue::Tuple(inner_vals)) => {
+                if per_field.len() != inner_vals.len() {
+                    let exp = per_field.len();
+                    let got = inner_vals.len();
+                    return Err(anyhow!(
+                        "found unexpected length tuple value. Expected: {exp}, Found: {got}"
+                    ));
+                }
+                for (col, v) in per_field.iter_mut().zip(inner_vals) {
+                    col.push(Some(v));
+                }
+            }
+            None => {
+                for col in &mut per_field {
+                    col.push(None);
+                }
+            }
+            Some(other) => {
+                return Err(anyhow!(
+                    "found unexpected value. Expected: tuple, Found: {other:?}"
+                ));
+            }
+        }
+    }
+
+    let mut arrays = Vec::with_capacity(fields.len());
+    for (sol_type, (field_vals, &(_, comps))) in
+        fields.iter().zip(per_field.into_iter().zip(named.iter()))
+    {
+        let arr = match (sol_type, comps) {
+            (DynSolType::Tuple(sub_fields), comps) if !comps.is_empty() => {
+                let sub_named: Vec<(&str, &[Param])> =
+                    comps.iter().map(|c| (c.name.as_str(), c.components.as_slice())).collect();
+                to_struct_named(sub_fields, &sub_named, field_vals, allow_decode_fail)?
+            }
+            _ => to_arrow(sol_type, field_vals, allow_decode_fail)?,
+        };
+        arrays.push(arr);
+    }
+
+    let schema_fields = named
+        .iter()
+        .enumerate()
+        .zip(arrays.iter())
+        .map(|((i, &(name, _)), arr)| {
+            let n = if name.is_empty() { format!("param{i}") } else { name.to_string() };
+            Field::new(n, arr.data_type().clone(), true)
+        })
+        .collect::<Vec<_>>();
+
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(schema_fields)), arrays)
+        .context("construct record batch")?;
+    Ok(Arc::new(StructArray::from(batch)))
+}
+
 /// Decode topic column values from binary to Arrow arrays.
 pub(crate) fn decode_topic<I: OffsetSizeTrait>(
     sol_type: &DynSolType,
@@ -544,9 +647,11 @@ pub(crate) fn decode_topic<I: OffsetSizeTrait>(
     Ok(())
 }
 
-/// Decode body (non-indexed data) column values from binary to Arrow arrays.
-pub(crate) fn decode_body<I: OffsetSizeTrait>(
+/// Decode body to Arrow arrays. Use [`EventParam`] component names so inner tuple
+/// fields are named (e.g. `sharesDelta`) instead of positional (`param0`).
+pub(crate) fn decode_body_named<I: OffsetSizeTrait>(
     body_sol_type: &DynSolType,
+    body_params: &[&EventParam],
     body_col: &GenericBinaryArray<I>,
     allow_decode_fail: bool,
     arrays: &mut Vec<Arc<dyn Array>>,
@@ -561,25 +666,32 @@ pub(crate) fn decode_body<I: OffsetSizeTrait>(
                     log::debug!("failed to decode body: {e}");
                     body_decoded.push(None);
                 }
-                Err(e) => {
-                    return Err(anyhow!("failed to decode body: {e}"));
-                }
+                Err(e) => return Err(anyhow!("failed to decode body: {e}")),
             },
             None => body_decoded.push(None),
         }
     }
 
+    let named: Vec<(&str, &[Param])> =
+        body_params.iter().map(|p| (p.name.as_str(), p.components.as_slice())).collect();
+
+    let body_sol_types = match body_sol_type {
+        DynSolType::Tuple(f) => f.as_slice(),
+        _ => return Err(anyhow!("body_sol_type must be DynSolType::Tuple")),
+    };
+
     let body_array =
-        to_arrow(body_sol_type, body_decoded, allow_decode_fail).context("map body to arrow")?;
+        to_struct_named(body_sol_types, &named, body_decoded, allow_decode_fail)
+            .context("build body struct")?;
+
     let arr = body_array
         .as_any()
         .downcast_ref::<StructArray>()
-        .context("expected struct array from to_arrow")?;
+        .context("expected struct array from to_struct_named")?;
 
     for f in arr.columns() {
         arrays.push(f.clone());
     }
-
     Ok(())
 }
 

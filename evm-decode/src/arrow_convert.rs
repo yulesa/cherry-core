@@ -607,7 +607,7 @@ fn to_string(sol_values: &[Option<DynSolValue>]) -> Result<Arc<dyn Array>> {
 /// Like [`to_struct`] but accepts `(name, components)` per field so that
 /// tuple sub-fields are named from their [`Param`] components rather than
 /// falling back to `param0`, `param1`, …
-fn to_struct_named(
+pub(crate) fn to_struct_named(
     fields: &[DynSolType],
     named: &[(&str, &[Param])],
     sol_values: Vec<Option<DynSolValue>>,

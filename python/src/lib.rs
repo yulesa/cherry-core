@@ -42,11 +42,7 @@ static TOKIO_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 
 #[pymodule]
 fn tiders_core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .try_init()
-        .ok();
+    let _ = pyo3_log::try_init();
 
     m.add_function(wrap_pyfunction!(cast, m)?)?;
     m.add_function(wrap_pyfunction!(cast_schema, m)?)?;
@@ -76,10 +72,12 @@ fn tiders_core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(evm_signature_to_topic0, m)?)?;
+    m.add_function(wrap_pyfunction!(evm_abi_to_topic0, m)?)?;
     m.add_class::<EvmAbiEvent>()?;
     m.add_class::<EvmAbiFunction>()?;
     m.add_function(wrap_pyfunction!(evm_abi_events, m)?)?;
     m.add_function(wrap_pyfunction!(evm_abi_functions, m)?)?;
+    m.add_function(wrap_pyfunction!(flatten_batch, m)?)?;
     m.add_function(wrap_pyfunction!(base58_encode_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(base58_decode_string, m)?)?;
     ingest::ingest_module(py, m)?;
@@ -557,7 +555,12 @@ fn evm_function_signature_to_arrow_schemas(
 #[pyfunction]
 fn evm_signature_to_topic0(signature: &str) -> PyResult<String> {
     let topic0 = baselib::evm_decode::signature_to_topic0(signature)?;
+    Ok(format!("0x{}", faster_hex::hex_string(topic0.as_slice())))
+}
 
+#[pyfunction]
+fn evm_abi_to_topic0(abi_json: &str) -> PyResult<String> {
+    let topic0 = baselib::evm_decode::abi_to_topic0(abi_json)?;
     Ok(format!("0x{}", faster_hex::hex_string(topic0.as_slice())))
 }
 
@@ -569,6 +572,7 @@ struct EvmAbiEvent {
     signature: String,
     selector_signature: String,
     topic0: String,
+    abi_json: String,
 }
 
 #[pyclass(frozen, get_all)]
@@ -579,6 +583,7 @@ struct EvmAbiFunction {
     signature: String,
     selector_signature: String,
     selector: String,
+    abi_json: String,
 }
 
 #[pyfunction]
@@ -592,6 +597,7 @@ fn evm_abi_events(json_str: &str) -> PyResult<Vec<EvmAbiEvent>> {
             signature: e.signature,
             selector_signature: e.selector_signature,
             topic0: e.topic0,
+            abi_json: e.abi_json,
         })
         .collect())
 }
@@ -607,8 +613,18 @@ fn evm_abi_functions(json_str: &str) -> PyResult<Vec<EvmAbiFunction>> {
             signature: f.signature,
             selector_signature: f.selector_signature,
             selector: f.selector,
+            abi_json: f.abi_json,
         })
         .collect())
+}
+
+#[pyfunction]
+fn flatten_batch(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+    let batch = RecordBatch::from_pyarrow_bound(batch).context("convert batch from pyarrow")?;
+
+    let batch = baselib::cast::flatten_record_batch(&batch).context("flatten batch")?;
+
+    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
 }
 
 #[pyfunction]

@@ -35,6 +35,7 @@ tiders-core (re-exports)
 │   ├── tiders-svm-schema
 │   └── tiders-rpc-client (optional, for RPC provider)
 ├── tiders-evm-decode
+│   └── tiders-cast
 ├── tiders-svm-decode
 ├── tiders-cast
 └── tiders-query

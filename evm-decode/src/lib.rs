@@ -32,11 +32,22 @@ use arrow::{
 };
 
 pub use abi::*;
-use arrow_convert::{build_topic0_mask, decode_body, decode_topic, to_arrow, to_arrow_dtype};
+use arrow_convert::{
+    build_topic0_mask, decode_body_named, decode_topic, param_to_arrow_dtype, to_struct_named,
+};
 
-/// Returns topic0 based on given event signature
+/// Returns topic0 based on a human-readable Solidity event signature
+/// (e.g. `"Transfer(address indexed,address indexed,uint256)"`).
 pub fn signature_to_topic0(signature: &str) -> Result<[u8; 32]> {
     let event = alloy_json_abi::Event::parse(signature).context("parse event signature")?;
+    Ok(event.selector().into())
+}
+
+/// Returns topic0 based on a JSON ABI fragment for an event
+/// (e.g. the `abi_json` field from [`crate::abi_events`]).
+pub fn abi_to_topic0(abi_json: &str) -> Result<[u8; 32]> {
+    let event: alloy_json_abi::Event =
+        serde_json::from_str(abi_json).context("parse event ABI JSON")?;
     Ok(event.selector().into())
 }
 
@@ -73,13 +84,11 @@ fn decode_call_impl<const IS_INPUT: bool, I: OffsetSizeTrait>(
     data: &GenericBinaryArray<I>,
     allow_decode_fail: bool,
 ) -> Result<RecordBatch> {
-    let (call, resolved) = resolve_function_signature(signature)?;
+    let (func, resolved) = resolve_function_signature(signature)?;
 
-    let schema = function_signature_to_arrow_schemas_impl(&call, &resolved)
-        .context("convert event signature to arrow schema")?;
+    let schema = function_signature_to_arrow_schemas_impl(&func)
+        .context("convert function signature to arrow schema")?;
     let schema = if IS_INPUT { schema.0 } else { schema.1 };
-
-    let mut arrays: Vec<Arc<dyn Array + 'static>> = Vec::with_capacity(schema.fields().len());
 
     let mut decoded = Vec::<Option<DynSolValue>>::with_capacity(data.len());
 
@@ -106,60 +115,71 @@ fn decode_call_impl<const IS_INPUT: bool, I: OffsetSizeTrait>(
         }
     }
 
-    let sol_type = if IS_INPUT {
-        DynSolType::Tuple(resolved.types().to_vec())
+    let sol_fields = if IS_INPUT {
+        resolved.types().to_vec()
     } else {
-        DynSolType::Tuple(resolved.returns().types().to_vec())
+        resolved.returns().types().to_vec()
     };
+    let params = if IS_INPUT {
+        &func.inputs
+    } else {
+        &func.outputs
+    };
+    let named: Vec<_> = params
+        .iter()
+        .map(|p| (p.name.as_str(), p.components.as_slice()))
+        .collect();
 
-    let array = to_arrow(&sol_type, decoded, allow_decode_fail).context("map params to arrow")?;
+    let array = to_struct_named(&sol_fields, &named, decoded, allow_decode_fail)
+        .context("map params to arrow")?;
     let arr = array
         .as_any()
         .downcast_ref::<StructArray>()
-        .context("expected struct array from to_arrow")?;
+        .context("expected struct array from to_struct_named")?;
 
+    let mut arrays: Vec<Arc<dyn Array + 'static>> = Vec::with_capacity(arr.num_columns());
     for f in arr.columns() {
         arrays.push(f.clone());
     }
 
-    RecordBatch::try_new(Arc::new(schema), arrays).context("construct arrow batch")
+    let batch = RecordBatch::try_new(Arc::new(schema), arrays).context("construct arrow batch")?;
+    tiders_cast::flatten_record_batch(&batch).context("flatten decoded batch")
 }
 
 /// Returns the Arrow schemas for a function's inputs and outputs as `(input_schema, output_schema)`.
 pub fn function_signature_to_arrow_schemas(signature: &str) -> Result<(Schema, Schema)> {
-    let (func, resolved) = resolve_function_signature(signature)?;
-    function_signature_to_arrow_schemas_impl(&func, &resolved)
+    let (func, _) = resolve_function_signature(signature)?;
+    let (input_schema, output_schema) = function_signature_to_arrow_schemas_impl(&func)?;
+    Ok((
+        tiders_cast::flatten_schema(&input_schema),
+        tiders_cast::flatten_schema(&output_schema),
+    ))
 }
 
 fn function_signature_to_arrow_schemas_impl(
     func: &alloy_json_abi::Function,
-    call: &DynSolCall,
 ) -> Result<(Schema, Schema)> {
-    let mut input_fields = Vec::with_capacity(call.types().len());
-    let mut output_fields = Vec::with_capacity(call.returns().types().len());
+    let mut input_fields = Vec::with_capacity(func.inputs.len());
+    let mut output_fields = Vec::with_capacity(func.outputs.len());
 
-    for (i, (sol_t, param)) in call.types().iter().zip(func.inputs.iter()).enumerate() {
-        let dtype = to_arrow_dtype(sol_t).context("map to arrow type")?;
-        let name = if param.name() == "" {
+    for (i, param) in func.inputs.iter().enumerate() {
+        let dtype =
+            param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
+        let name = if param.name.is_empty() {
             format!("param{i}")
         } else {
-            param.name().to_owned()
+            param.name.clone()
         };
         input_fields.push(Arc::new(Field::new(name, dtype, true)));
     }
 
-    for (i, (sol_t, param)) in call
-        .returns()
-        .types()
-        .iter()
-        .zip(func.outputs.iter())
-        .enumerate()
-    {
-        let dtype = to_arrow_dtype(sol_t).context("map to arrow type")?;
-        let name = if param.name() == "" {
+    for (i, param) in func.outputs.iter().enumerate() {
+        let dtype =
+            param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
+        let name = if param.name.is_empty() {
             format!("param{i}")
         } else {
-            param.name().to_owned()
+            param.name.clone()
         };
         output_fields.push(Arc::new(Field::new(name, dtype, true)));
     }
@@ -167,11 +187,30 @@ fn function_signature_to_arrow_schemas_impl(
     Ok((Schema::new(input_fields), Schema::new(output_fields)))
 }
 
-fn resolve_function_signature(signature: &str) -> Result<(alloy_json_abi::Function, DynSolCall)> {
-    let event = alloy_json_abi::Function::parse(signature).context("parse function signature")?;
-    let resolved = event.resolve().context("resolve function signature")?;
+fn parse_function_str(signature: &str) -> Result<alloy_json_abi::Function> {
+    if signature.starts_with('{') {
+        return serde_json::from_str(signature).context("parse function JSON");
+    }
+    if signature.contains("tuple(") {
+        log::warn!(
+            "Function signature contains `tuple(...)` which will produce unnamed fields in the Arrow schema. \
+             Consider passing a JSON ABI fragment instead.\n  \
+             Signature: {signature}"
+        );
+    }
+    alloy_json_abi::Function::parse(signature).map_err(|e| {
+        anyhow!(
+            "{e}\n  \
+             Hint: if the signature contains named tuple fields (e.g. `tuple(int256 foo, ...)`),\n  \
+             either strip the inner names (e.g. `(int256,...)`) or pass a JSON ABI fragment."
+        )
+    })
+}
 
-    Ok((event, resolved))
+fn resolve_function_signature(signature: &str) -> Result<(alloy_json_abi::Function, DynSolCall)> {
+    let func = parse_function_str(signature)?;
+    let resolved = func.resolve().context("resolve function signature")?;
+    Ok((func, resolved))
 }
 
 /// Decodes given event data in arrow format to arrow format.
@@ -202,7 +241,7 @@ pub fn decode_events(
         data.clone()
     };
 
-    let schema = event_signature_to_arrow_schema_impl(&event, &resolved)
+    let schema = event_signature_to_arrow_schema_impl(&event)
         .context("convert event signature to arrow schema")?;
 
     let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
@@ -233,21 +272,36 @@ pub fn decode_events(
     }
 
     let body_col = data.column_by_name("data").context("get data column")?;
-
     let body_sol_type = DynSolType::Tuple(resolved.body().to_vec());
+    let body_params: Vec<&alloy_json_abi::EventParam> =
+        event.inputs.iter().filter(|i| !i.indexed).collect();
 
     if body_col.data_type() == &DataType::Binary {
         let arr = body_col
             .as_any()
             .downcast_ref::<BinaryArray>()
             .context("downcast to BinaryArray")?;
-        decode_body(&body_sol_type, arr, allow_decode_fail, &mut arrays).context("decode body")?;
+        decode_body_named(
+            &body_sol_type,
+            &body_params,
+            arr,
+            allow_decode_fail,
+            &mut arrays,
+        )
+        .context("decode body")?;
     } else if body_col.data_type() == &DataType::LargeBinary {
         let arr = body_col
             .as_any()
             .downcast_ref::<LargeBinaryArray>()
             .context("downcast to LargeBinaryArray")?;
-        decode_body(&body_sol_type, arr, allow_decode_fail, &mut arrays).context("decode body")?;
+        decode_body_named(
+            &body_sol_type,
+            &body_params,
+            arr,
+            allow_decode_fail,
+            &mut arrays,
+        )
+        .context("decode body")?;
     }
 
     if hstack {
@@ -258,22 +312,25 @@ pub fn decode_events(
     }
 
     let output_schema = Schema::new(fields);
-    RecordBatch::try_new(Arc::new(output_schema), arrays).context("construct arrow batch")
+    let batch =
+        RecordBatch::try_new(Arc::new(output_schema), arrays).context("construct arrow batch")?;
+    tiders_cast::flatten_record_batch(&batch).context("flatten decoded batch")
 }
 
 /// Returns the Arrow schema that [`decode_events`] would produce for the given event signature.
 pub fn event_signature_to_arrow_schema(signature: &str) -> Result<Schema> {
-    let (resolved, event) = resolve_event_signature(signature)?;
-    event_signature_to_arrow_schema_impl(&resolved, &event)
+    let (event, _) = resolve_event_signature(signature)?;
+    let schema = event_signature_to_arrow_schema_impl(&event)?;
+    Ok(tiders_cast::flatten_schema(&schema))
 }
 
-fn event_signature_to_arrow_schema_impl(
-    sig: &alloy_json_abi::Event,
-    event: &DynSolEvent,
-) -> Result<Schema> {
-    let num_fields = event.indexed().len() + event.body().len();
-    let mut fields = Vec::<Arc<Field>>::with_capacity(num_fields);
-    let mut names = Vec::with_capacity(num_fields);
+/// Builds the Arrow schema for an event directly from its [`alloy_json_abi::Event`].
+///
+/// Indexed params come first (matching the topic decode order), followed by
+/// body params. Tuple params use [`param_to_arrow_dtype`] so component names
+/// are preserved as named `Struct` fields.
+fn event_signature_to_arrow_schema_impl(sig: &alloy_json_abi::Event) -> Result<Schema> {
+    let mut fields = Vec::<Arc<Field>>::new();
 
     for (i, input) in sig.inputs.iter().enumerate() {
         if input.indexed {
@@ -282,7 +339,9 @@ fn event_signature_to_arrow_schema_impl(
             } else {
                 input.name.clone()
             };
-            names.push(name);
+            let dtype = param_to_arrow_dtype(&input.ty, &input.components)
+                .context("map indexed param to arrow type")?;
+            fields.push(Arc::new(Field::new(name, dtype, true)));
         }
     }
     for (i, input) in sig.inputs.iter().enumerate() {
@@ -292,22 +351,49 @@ fn event_signature_to_arrow_schema_impl(
             } else {
                 input.name.clone()
             };
-            names.push(name);
+            let dtype = param_to_arrow_dtype(&input.ty, &input.components)
+                .context("map body param to arrow type")?;
+            fields.push(Arc::new(Field::new(name, dtype, true)));
         }
-    }
-
-    for (sol_t, name) in event.indexed().iter().chain(event.body()).zip(names) {
-        let dtype = to_arrow_dtype(sol_t).context("map to arrow type")?;
-        fields.push(Arc::new(Field::new(name, dtype, true)));
     }
 
     Ok(Schema::new(fields))
 }
 
-fn resolve_event_signature(signature: &str) -> Result<(alloy_json_abi::Event, DynSolEvent)> {
-    let event = alloy_json_abi::Event::parse(signature).context("parse event signature")?;
-    let resolved = event.resolve().context("resolve event signature")?;
+/// Parse an event from either a human-readable Solidity signature or a JSON
+/// fragment (the format produced by [`crate::abi_events`]).
+///
+/// Accepts three formats:
+/// - JSON ABI fragment: `{"type":"event","name":"Swap","inputs":[...],...}`
+/// - Standard HR signature: `Swap(address indexed sender, uint256 amount)`
+/// - Full HR signature with named tuple fields (alloy `full_signature()` output):
+///   `Swap(address indexed sender, tuple(int256 a, int256 b) data)` — alloy's
+///   `Event::parse` rejects named types inside tuple parens, so we parse this
+///   ourselves, build a JSON value, and deserialise to preserve component names.
+fn parse_event_str(signature: &str) -> Result<alloy_json_abi::Event> {
+    if signature.starts_with('{') {
+        return serde_json::from_str(signature).context("parse event JSON");
+    }
+    if signature.contains("tuple(") {
+        log::warn!(
+            "Event signature contains `tuple(...)` which will produce unnamed fields in the Arrow schema. \
+             Consider passing a JSON ABI fragment instead.\n  \
+             Signature: {signature}"
+        );
+    }
+    alloy_json_abi::Event::parse(signature).map_err(|e| {
+        anyhow!(
+            "{e}\n  \
+             Hint: if the signature contains named tuple fields (e.g. `tuple(int256 foo, ...)`),\n  \
+             either strip the inner names (e.g. `(int256,...)`) or pass a JSON ABI fragment."
+        )
+    })
+}
 
+/// Find the index of the closing `)` that matches the `(` at `open`.
+fn resolve_event_signature(signature: &str) -> Result<(alloy_json_abi::Event, DynSolEvent)> {
+    let event = parse_event_str(signature)?;
+    let resolved = event.resolve().context("resolve event signature")?;
     Ok((event, resolved))
 }
 
@@ -436,6 +522,379 @@ mod tests {
             result.column_by_name("topic0").is_some(),
             "hstack should include original input columns"
         );
+    }
+
+    #[test]
+    fn test_decode_call_inputs_named_tuple_via_abi_json() {
+        use arrow::array::{BinaryArray, Decimal128Array, Decimal256Array, GenericBinaryBuilder};
+
+        // JSON ABI fragment with:
+        //  - a nested static tuple (config.breakdown) → tests two-level struct recursion
+        //  - a variable-length tuple array (rewards: tuple[]) → tests List<Struct> → Utf8
+        //
+        // All params land in a single calldata binary (no topic/body split like events).
+        let abi_json = r#"{
+            "type": "function",
+            "name": "setConfig",
+            "inputs": [
+                {"name": "assetId", "type": "uint256", "components": []},
+                {"name": "spoke",   "type": "address", "components": []},
+                {"name": "config", "type": "tuple", "components": [
+                    {"name": "sharesDelta",    "type": "int256", "components": []},
+                    {"name": "offsetRayDelta", "type": "int256", "components": []},
+                    {"name": "breakdown", "type": "tuple", "components": [
+                        {"name": "base",  "type": "uint128", "components": []},
+                        {"name": "bonus", "type": "uint128", "components": []}
+                    ]}
+                ]},
+                {"name": "rewards", "type": "tuple[]", "components": [
+                    {"name": "token",  "type": "address", "components": []},
+                    {"name": "amount", "type": "uint256", "components": []}
+                ]}
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        }"#;
+
+        let asset_id = U256::from(42u64);
+        let spoke_addr = [1u8; 20];
+        let shares_delta = I256::try_from(-100i64).unwrap();
+        let offset_ray_delta = I256::try_from(200i64).unwrap();
+        let base: u128 = 500;
+        let bonus: u128 = 999;
+        let reward_token_0 = [2u8; 20];
+        let reward_amount_0 = U256::from(1000u64);
+        let reward_token_1 = [3u8; 20];
+        let reward_amount_1 = U256::from(2000u64);
+
+        // ABI-encoded calldata (without the 4-byte function selector).
+        // assetId and spoke are static; config is a static tuple (4 words inline);
+        // rewards is dynamic (tuple[]) so the head holds a pointer to the tail.
+        //
+        // Head layout (7 words = 224 bytes):
+        //   [0..32]    assetId
+        //   [32..64]   spoke (address left-padded to 32 bytes)
+        //   [64..192]  config inline (sharesDelta, offsetRayDelta, base, bonus)
+        //   [192..224] offset for rewards = 224 (7 × 32, from start of encoding)
+        //
+        // Tail (starting at byte 224):
+        //   [224..256] rewards.length = 2
+        //   [256..320] rewards[0]: token (32 bytes) + amount (32 bytes)
+        //   [320..384] rewards[1]: token (32 bytes) + amount (32 bytes)
+        let mut calldata = Vec::new();
+        calldata.extend_from_slice(&asset_id.to_be_bytes::<32>());
+        let mut spoke_padded = [0u8; 32];
+        spoke_padded[12..].copy_from_slice(&spoke_addr);
+        calldata.extend_from_slice(&spoke_padded);
+        calldata.extend_from_slice(&shares_delta.to_be_bytes::<32>());
+        calldata.extend_from_slice(&offset_ray_delta.to_be_bytes::<32>());
+        calldata.extend_from_slice(&U256::from(base).to_be_bytes::<32>());
+        calldata.extend_from_slice(&U256::from(bonus).to_be_bytes::<32>());
+        calldata.extend_from_slice(&U256::from(7u64 * 32).to_be_bytes::<32>()); // rewards offset
+        calldata.extend_from_slice(&U256::from(2u64).to_be_bytes::<32>()); // rewards length
+        let mut reward_token_0_padded = [0u8; 32];
+        reward_token_0_padded[12..].copy_from_slice(&reward_token_0);
+        calldata.extend_from_slice(&reward_token_0_padded);
+        calldata.extend_from_slice(&reward_amount_0.to_be_bytes::<32>());
+        let mut reward_token_1_padded = [0u8; 32];
+        reward_token_1_padded[12..].copy_from_slice(&reward_token_1);
+        calldata.extend_from_slice(&reward_token_1_padded);
+        calldata.extend_from_slice(&reward_amount_1.to_be_bytes::<32>());
+
+        let mut builder = GenericBinaryBuilder::<i32>::new();
+        builder.append_value(&calldata);
+        let col = builder.finish();
+
+        let result = decode_call_inputs(abi_json, &col, false).unwrap();
+
+        assert_eq!(result.num_rows(), 1);
+
+        // Output must be fully flat — no Struct columns survive
+        for field in result.schema().fields() {
+            assert!(
+                !matches!(field.data_type(), DataType::Struct(_)),
+                "field '{}' should not be Struct after flattening",
+                field.name()
+            );
+        }
+
+        // Top-level params and dot-joined nested fields must all be present;
+        // tuple[] is serialised to a single Utf8 column.
+        let out_schema = result.schema();
+        assert!(out_schema.field_with_name("assetId").is_ok());
+        assert!(out_schema.field_with_name("spoke").is_ok());
+        assert!(out_schema.field_with_name("config.sharesDelta").is_ok());
+        assert!(out_schema.field_with_name("config.offsetRayDelta").is_ok());
+        assert!(out_schema.field_with_name("config.breakdown.base").is_ok());
+        assert!(out_schema.field_with_name("config.breakdown.bonus").is_ok());
+        assert_eq!(
+            out_schema.field_with_name("rewards").unwrap().data_type(),
+            &DataType::Utf8,
+            "variable-length tuple[] should be serialised to Utf8"
+        );
+
+        // Print the human-readable signature derived from the JSON ABI fragment
+        let func: alloy_json_abi::Function = serde_json::from_str(abi_json).unwrap();
+        println!("Human-readable signature: {}", func.full_signature());
+
+        // Print the serialised rewards string (List<Struct> → Utf8)
+        use arrow::array::StringArray;
+        let rewards_col = result
+            .column_by_name("rewards")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        println!("rewards[0]: {}", rewards_col.value(0));
+
+        // spoke: address → 20 raw bytes
+        let spoke_col = result
+            .column_by_name("spoke")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        assert_eq!(spoke_col.value(0), spoke_addr);
+
+        // config.breakdown.base and .bonus: uint128 → Decimal128(38, 0)
+        let base_col = result
+            .column_by_name("config.breakdown.base")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(base_col.value(0), base as i128);
+
+        let bonus_col = result
+            .column_by_name("config.breakdown.bonus")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(bonus_col.value(0), bonus as i128);
+
+        // assetId: uint256 → Decimal256(76, 0)
+        let asset_id_col = result
+            .column_by_name("assetId")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal256Array>()
+            .unwrap();
+        let expected = arrow::datatypes::i256::from_be_bytes(asset_id.to_be_bytes::<32>());
+        assert_eq!(asset_id_col.value(0), expected);
+
+        // config.sharesDelta: int256 → Decimal256(76, 0)
+        let shares_delta_col = result
+            .column_by_name("config.sharesDelta")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal256Array>()
+            .unwrap();
+        let expected = arrow::datatypes::i256::from_be_bytes(shares_delta.to_be_bytes::<32>());
+        assert_eq!(shares_delta_col.value(0), expected);
+
+        // // Save decoded batch to parquet in the crate root
+        // use parquet::arrow::ArrowWriter;
+        // use std::fs::File;
+        // let file = File::create("refresh_premium_decoded.parquet").unwrap();
+        // let mut writer = ArrowWriter::try_new(file, result.schema(), None).unwrap();
+        // writer.write(&result).unwrap();
+        // writer.close().unwrap();
+    }
+
+    #[test]
+    fn test_decode_events_named_tuple_via_abi_json() {
+        use arrow::array::{BinaryArray, Decimal128Array, GenericBinaryBuilder};
+
+        // JSON ABI fragment with:
+        //  - a nested static tuple (premiumDelta.breakdown) → tests two-level struct recursion
+        //  - a variable-length tuple array (rewards: tuple[]) → tests List<Struct> → Utf8
+        let abi_json = r#"{
+            "type": "event",
+            "name": "RefreshPremium",
+            "inputs": [
+                {"name": "assetId", "type": "uint256", "indexed": true, "components": []},
+                {"name": "spoke",   "type": "address", "indexed": true, "components": []},
+                {"name": "premiumDelta", "type": "tuple", "indexed": false, "components": [
+                    {"name": "sharesDelta",    "type": "int256", "components": []},
+                    {"name": "offsetRayDelta", "type": "int256", "components": []},
+                    {"name": "breakdown", "type": "tuple", "components": [
+                        {"name": "base",  "type": "uint128", "components": []},
+                        {"name": "bonus", "type": "uint128", "components": []}
+                    ]}
+                ]},
+                {"name": "rewards", "type": "tuple[]", "indexed": false, "components": [
+                    {"name": "token",  "type": "address", "components": []},
+                    {"name": "amount", "type": "uint256", "components": []}
+                ]}
+            ],
+            "anonymous": false
+        }"#;
+
+        let asset_id = U256::from(42u64);
+        let spoke_addr = [1u8; 20];
+        let shares_delta = I256::try_from(-100i64).unwrap();
+        let offset_ray_delta = I256::try_from(200i64).unwrap();
+        let base: u128 = 500;
+        let bonus: u128 = 999;
+        let reward_token_0 = [2u8; 20];
+        let reward_amount_0 = U256::from(1000u64);
+        let reward_token_1 = [3u8; 20];
+        let reward_amount_1 = U256::from(2000u64);
+
+        // topic1: uint256 → 32-byte big-endian
+        let topic1 = asset_id.to_be_bytes::<32>();
+
+        // topic2: address → left-padded to 32 bytes
+        let mut topic2 = [0u8; 32];
+        topic2[12..].copy_from_slice(&spoke_addr);
+
+        // Body: ABI-encoded sequence (premiumDelta, rewards).
+        // premiumDelta is static (4 × 32 = 128 bytes); rewards is dynamic (tuple[]).
+        // ABI head/tail layout:
+        //   [0..128]   premiumDelta inline (4 words)
+        //   [128..160] offset for rewards = 160 (start of tail, relative to head start)
+        //   [160..192] rewards array length = 2
+        //   [192..256] rewards[0]: token (32 bytes) + amount (32 bytes)
+        //   [256..320] rewards[1]: token (32 bytes) + amount (32 bytes)
+        let premiumdelta_word_count: u64 = 4; // sharesDelta + offsetRayDelta + base + bonus
+        let head_size: u64 = premiumdelta_word_count * 32 + 32; // +32 for rewards offset word
+        let mut body = Vec::new();
+        // premiumDelta fields (static, encoded inline in the head)
+        body.extend_from_slice(&shares_delta.to_be_bytes::<32>());
+        body.extend_from_slice(&offset_ray_delta.to_be_bytes::<32>());
+        body.extend_from_slice(&U256::from(base).to_be_bytes::<32>());
+        body.extend_from_slice(&U256::from(bonus).to_be_bytes::<32>());
+        // offset pointing to the start of rewards tail data
+        body.extend_from_slice(&U256::from(head_size).to_be_bytes::<32>());
+        // rewards tail: length + elements
+        body.extend_from_slice(&U256::from(2u64).to_be_bytes::<32>());
+        let mut reward_token_0_padded = [0u8; 32];
+        reward_token_0_padded[12..].copy_from_slice(&reward_token_0);
+        body.extend_from_slice(&reward_token_0_padded);
+        body.extend_from_slice(&reward_amount_0.to_be_bytes::<32>());
+        let mut reward_token_1_padded = [0u8; 32];
+        reward_token_1_padded[12..].copy_from_slice(&reward_token_1);
+        body.extend_from_slice(&reward_token_1_padded);
+        body.extend_from_slice(&reward_amount_1.to_be_bytes::<32>());
+
+        let selector = abi_to_topic0(abi_json).unwrap();
+
+        let mut topic0_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic1_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic2_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic3_b = GenericBinaryBuilder::<i32>::new();
+        let mut data_b = GenericBinaryBuilder::<i32>::new();
+
+        topic0_b.append_value(selector);
+        topic1_b.append_value(topic1);
+        topic2_b.append_value(topic2);
+        topic3_b.append_null();
+        data_b.append_value(&body);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("topic0", DataType::Binary, true),
+            Field::new("topic1", DataType::Binary, true),
+            Field::new("topic2", DataType::Binary, true),
+            Field::new("topic3", DataType::Binary, true),
+            Field::new("data", DataType::Binary, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(topic0_b.finish()),
+                Arc::new(topic1_b.finish()),
+                Arc::new(topic2_b.finish()),
+                Arc::new(topic3_b.finish()),
+                Arc::new(data_b.finish()),
+            ],
+        )
+        .unwrap();
+
+        let result = decode_events(abi_json, &batch, false, false, false).unwrap();
+
+        assert_eq!(result.num_rows(), 1);
+
+        // Output must be fully flat — no Struct columns survive
+        for field in result.schema().fields() {
+            assert!(
+                !matches!(field.data_type(), DataType::Struct(_)),
+                "field '{}' should not be Struct after flattening",
+                field.name()
+            );
+        }
+
+        // Indexed params are top-level; nested tuple fields are dot-joined two levels deep;
+        // tuple[] is flattened to a single Utf8 column (variable-length → serialised).
+        let out_schema = result.schema();
+        assert!(out_schema.field_with_name("assetId").is_ok());
+        assert!(out_schema.field_with_name("spoke").is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.sharesDelta")
+            .is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.offsetRayDelta")
+            .is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.breakdown.base")
+            .is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.breakdown.bonus")
+            .is_ok());
+        assert_eq!(
+            out_schema.field_with_name("rewards").unwrap().data_type(),
+            &DataType::Utf8,
+            "variable-length tuple[] should be serialised to Utf8"
+        );
+
+        // Print the human-readable signature derived from the JSON ABI fragment
+        let event: alloy_json_abi::Event = serde_json::from_str(abi_json).unwrap();
+        println!("Human-readable signature: {}", event.full_signature());
+
+        // Print the serialised rewards string (List<Struct> → Utf8)
+        use arrow::array::StringArray;
+        let rewards_col = result
+            .column_by_name("rewards")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        println!("rewards[0]: {}", rewards_col.value(0));
+
+        // spoke: address decodes to 20 raw bytes
+        let spoke_col = result
+            .column_by_name("spoke")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        assert_eq!(spoke_col.value(0), spoke_addr);
+
+        // breakdown.base and breakdown.bonus: uint128 → Decimal128(38, 0)
+        let base_col = result
+            .column_by_name("premiumDelta.breakdown.base")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(base_col.value(0), base as i128);
+
+        let bonus_col = result
+            .column_by_name("premiumDelta.breakdown.bonus")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(bonus_col.value(0), bonus as i128);
+
+        // // Save decoded batch to parquet in the crate root
+        // use parquet::arrow::ArrowWriter;
+        // use std::fs::File;
+        // let file = File::create("refresh_premium_decoded.parquet").unwrap();
+        // let mut writer = ArrowWriter::try_new(file, result.schema(), None).unwrap();
+        // writer.write(&result).unwrap();
+        // writer.close().unwrap();
     }
 
     #[test]

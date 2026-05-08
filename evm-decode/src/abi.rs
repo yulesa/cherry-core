@@ -62,21 +62,16 @@ fn param_type_str(ty: &str, components: &[alloy_json_abi::Param]) -> String {
             .map(|c| param_type_str(&c.ty, &c.components))
             .collect::<Vec<_>>()
             .join(",");
-        format!("({inner}){suffix}")
+        format!("tuple({inner}){suffix}")
     } else {
         ty.to_string()
     }
 }
 
-/// Builds a human-readable event signature that keeps top-level param names
-/// and `indexed` flags but strips names from inside tuple components.
-/// alloy's full_signature() emits a human-readable signature but with names for tuple components, which causes alloy's Event::parse (used in decode) to reject it.
+/// Builds a human-readable event signature: outer param names and `indexed` flags kept,
+/// inner tuple component names stripped.
 ///
-/// Example: `RefreshPremium(uint256 indexed assetId, (int256,int256,uint256) premiumDelta)`
-/// premiumDelta inner values don't have names.
-///
-/// This format is accepted by alloy's `Event::parse` directly and can be
-/// passed to [`crate::decode_events`] and [`crate::signature_to_topic0`].
+/// Example: `Swap(address indexed sender, tuple(int256,int256) delta)`
 fn event_decode_signature(event: &alloy_json_abi::Event) -> String {
     let params = event
         .inputs
@@ -93,6 +88,27 @@ fn event_decode_signature(event: &alloy_json_abi::Event) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("{}({params})", event.name)
+}
+
+/// Builds a human-readable function signature: outer param names kept, inner tuple names stripped.
+///
+/// Example: `swap(address recipient, tuple(int256,uint256) params)(bool success)`
+fn func_decode_signature(func: &alloy_json_abi::Function) -> String {
+    let fmt_params = |params: &[alloy_json_abi::Param]| {
+        params
+            .iter()
+            .map(|p| {
+                let ty = param_type_str(&p.ty, &p.components);
+                if p.name.is_empty() {
+                    ty
+                } else {
+                    format!("{ty} {}", p.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!("{}({})({})", func.name, fmt_params(&func.inputs), fmt_params(&func.outputs))
 }
 
 /// Parse a JSON ABI string and extract all events.
@@ -123,7 +139,7 @@ pub fn abi_functions(json_str: &str) -> Result<Vec<EvmAbiFunction>> {
         functions.push(EvmAbiFunction {
             name_snake_case: to_snake_case(&func.name),
             name: func.name.clone(),
-            signature: func.full_signature(),
+            signature: func_decode_signature(func),
             selector_signature: func.signature(),
             selector: format!("0x{}", faster_hex::hex_string(selector.as_slice())),
             abi_json: serde_json::to_string(func)

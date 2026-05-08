@@ -120,8 +120,15 @@ fn decode_call_impl<const IS_INPUT: bool, I: OffsetSizeTrait>(
     } else {
         resolved.returns().types().to_vec()
     };
-    let params = if IS_INPUT { &func.inputs } else { &func.outputs };
-    let named: Vec<_> = params.iter().map(|p| (p.name.as_str(), p.components.as_slice())).collect();
+    let params = if IS_INPUT {
+        &func.inputs
+    } else {
+        &func.outputs
+    };
+    let named: Vec<_> = params
+        .iter()
+        .map(|p| (p.name.as_str(), p.components.as_slice()))
+        .collect();
 
     let array = to_struct_named(&sol_fields, &named, decoded, allow_decode_fail)
         .context("map params to arrow")?;
@@ -156,14 +163,24 @@ fn function_signature_to_arrow_schemas_impl(
     let mut output_fields = Vec::with_capacity(func.outputs.len());
 
     for (i, param) in func.inputs.iter().enumerate() {
-        let dtype = param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
-        let name = if param.name.is_empty() { format!("param{i}") } else { param.name.clone() };
+        let dtype =
+            param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
+        let name = if param.name.is_empty() {
+            format!("param{i}")
+        } else {
+            param.name.clone()
+        };
         input_fields.push(Arc::new(Field::new(name, dtype, true)));
     }
 
     for (i, param) in func.outputs.iter().enumerate() {
-        let dtype = param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
-        let name = if param.name.is_empty() { format!("param{i}") } else { param.name.clone() };
+        let dtype =
+            param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
+        let name = if param.name.is_empty() {
+            format!("param{i}")
+        } else {
+            param.name.clone()
+        };
         output_fields.push(Arc::new(Field::new(name, dtype, true)));
     }
 
@@ -264,15 +281,27 @@ pub fn decode_events(
             .as_any()
             .downcast_ref::<BinaryArray>()
             .context("downcast to BinaryArray")?;
-        decode_body_named(&body_sol_type, &body_params, arr, allow_decode_fail, &mut arrays)
-            .context("decode body")?;
+        decode_body_named(
+            &body_sol_type,
+            &body_params,
+            arr,
+            allow_decode_fail,
+            &mut arrays,
+        )
+        .context("decode body")?;
     } else if body_col.data_type() == &DataType::LargeBinary {
         let arr = body_col
             .as_any()
             .downcast_ref::<LargeBinaryArray>()
             .context("downcast to LargeBinaryArray")?;
-        decode_body_named(&body_sol_type, &body_params, arr, allow_decode_fail, &mut arrays)
-            .context("decode body")?;
+        decode_body_named(
+            &body_sol_type,
+            &body_params,
+            arr,
+            allow_decode_fail,
+            &mut arrays,
+        )
+        .context("decode body")?;
     }
 
     if hstack {
@@ -305,8 +334,11 @@ fn event_signature_to_arrow_schema_impl(sig: &alloy_json_abi::Event) -> Result<S
 
     for (i, input) in sig.inputs.iter().enumerate() {
         if input.indexed {
-            let name =
-                if input.name.is_empty() { format!("param{i}") } else { input.name.clone() };
+            let name = if input.name.is_empty() {
+                format!("param{i}")
+            } else {
+                input.name.clone()
+            };
             let dtype = param_to_arrow_dtype(&input.ty, &input.components)
                 .context("map indexed param to arrow type")?;
             fields.push(Arc::new(Field::new(name, dtype, true)));
@@ -314,8 +346,11 @@ fn event_signature_to_arrow_schema_impl(sig: &alloy_json_abi::Event) -> Result<S
     }
     for (i, input) in sig.inputs.iter().enumerate() {
         if !input.indexed {
-            let name =
-                if input.name.is_empty() { format!("param{i}") } else { input.name.clone() };
+            let name = if input.name.is_empty() {
+                format!("param{i}")
+            } else {
+                input.name.clone()
+            };
             let dtype = param_to_arrow_dtype(&input.ty, &input.components)
                 .context("map body param to arrow type")?;
             fields.push(Arc::new(Field::new(name, dtype, true)));
@@ -556,7 +591,7 @@ mod tests {
         calldata.extend_from_slice(&U256::from(base).to_be_bytes::<32>());
         calldata.extend_from_slice(&U256::from(bonus).to_be_bytes::<32>());
         calldata.extend_from_slice(&U256::from(7u64 * 32).to_be_bytes::<32>()); // rewards offset
-        calldata.extend_from_slice(&U256::from(2u64).to_be_bytes::<32>());      // rewards length
+        calldata.extend_from_slice(&U256::from(2u64).to_be_bytes::<32>()); // rewards length
         let mut reward_token_0_padded = [0u8; 32];
         reward_token_0_padded[12..].copy_from_slice(&reward_token_0);
         calldata.extend_from_slice(&reward_token_0_padded);
@@ -605,38 +640,56 @@ mod tests {
         // Print the serialised rewards string (List<Struct> → Utf8)
         use arrow::array::StringArray;
         let rewards_col = result
-            .column_by_name("rewards").unwrap()
-            .as_any().downcast_ref::<StringArray>().unwrap();
+            .column_by_name("rewards")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         println!("rewards[0]: {}", rewards_col.value(0));
 
         // spoke: address → 20 raw bytes
         let spoke_col = result
-            .column_by_name("spoke").unwrap()
-            .as_any().downcast_ref::<BinaryArray>().unwrap();
+            .column_by_name("spoke")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
         assert_eq!(spoke_col.value(0), spoke_addr);
 
         // config.breakdown.base and .bonus: uint128 → Decimal128(38, 0)
         let base_col = result
-            .column_by_name("config.breakdown.base").unwrap()
-            .as_any().downcast_ref::<Decimal128Array>().unwrap();
+            .column_by_name("config.breakdown.base")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
         assert_eq!(base_col.value(0), base as i128);
 
         let bonus_col = result
-            .column_by_name("config.breakdown.bonus").unwrap()
-            .as_any().downcast_ref::<Decimal128Array>().unwrap();
+            .column_by_name("config.breakdown.bonus")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
         assert_eq!(bonus_col.value(0), bonus as i128);
 
         // assetId: uint256 → Decimal256(76, 0)
         let asset_id_col = result
-            .column_by_name("assetId").unwrap()
-            .as_any().downcast_ref::<Decimal256Array>().unwrap();
+            .column_by_name("assetId")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal256Array>()
+            .unwrap();
         let expected = arrow::datatypes::i256::from_be_bytes(asset_id.to_be_bytes::<32>());
         assert_eq!(asset_id_col.value(0), expected);
 
         // config.sharesDelta: int256 → Decimal256(76, 0)
         let shares_delta_col = result
-            .column_by_name("config.sharesDelta").unwrap()
-            .as_any().downcast_ref::<Decimal256Array>().unwrap();
+            .column_by_name("config.sharesDelta")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal256Array>()
+            .unwrap();
         let expected = arrow::datatypes::i256::from_be_bytes(shares_delta.to_be_bytes::<32>());
         assert_eq!(shares_delta_col.value(0), expected);
 
@@ -744,7 +797,7 @@ mod tests {
             Field::new("topic1", DataType::Binary, true),
             Field::new("topic2", DataType::Binary, true),
             Field::new("topic3", DataType::Binary, true),
-            Field::new("data",   DataType::Binary, true),
+            Field::new("data", DataType::Binary, true),
         ]));
 
         let batch = RecordBatch::try_new(
@@ -777,10 +830,18 @@ mod tests {
         let out_schema = result.schema();
         assert!(out_schema.field_with_name("assetId").is_ok());
         assert!(out_schema.field_with_name("spoke").is_ok());
-        assert!(out_schema.field_with_name("premiumDelta.sharesDelta").is_ok());
-        assert!(out_schema.field_with_name("premiumDelta.offsetRayDelta").is_ok());
-        assert!(out_schema.field_with_name("premiumDelta.breakdown.base").is_ok());
-        assert!(out_schema.field_with_name("premiumDelta.breakdown.bonus").is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.sharesDelta")
+            .is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.offsetRayDelta")
+            .is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.breakdown.base")
+            .is_ok());
+        assert!(out_schema
+            .field_with_name("premiumDelta.breakdown.bonus")
+            .is_ok());
         assert_eq!(
             out_schema.field_with_name("rewards").unwrap().data_type(),
             &DataType::Utf8,
@@ -794,25 +855,37 @@ mod tests {
         // Print the serialised rewards string (List<Struct> → Utf8)
         use arrow::array::StringArray;
         let rewards_col = result
-            .column_by_name("rewards").unwrap()
-            .as_any().downcast_ref::<StringArray>().unwrap();
+            .column_by_name("rewards")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         println!("rewards[0]: {}", rewards_col.value(0));
 
         // spoke: address decodes to 20 raw bytes
         let spoke_col = result
-            .column_by_name("spoke").unwrap()
-            .as_any().downcast_ref::<BinaryArray>().unwrap();
+            .column_by_name("spoke")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
         assert_eq!(spoke_col.value(0), spoke_addr);
 
         // breakdown.base and breakdown.bonus: uint128 → Decimal128(38, 0)
         let base_col = result
-            .column_by_name("premiumDelta.breakdown.base").unwrap()
-            .as_any().downcast_ref::<Decimal128Array>().unwrap();
+            .column_by_name("premiumDelta.breakdown.base")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
         assert_eq!(base_col.value(0), base as i128);
 
         let bonus_col = result
-            .column_by_name("premiumDelta.breakdown.bonus").unwrap()
-            .as_any().downcast_ref::<Decimal128Array>().unwrap();
+            .column_by_name("premiumDelta.breakdown.bonus")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
         assert_eq!(bonus_col.value(0), bonus as i128);
 
         // // Save decoded batch to parquet in the crate root

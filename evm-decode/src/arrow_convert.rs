@@ -36,7 +36,7 @@ pub(crate) fn to_arrow_dtype(sol_type: &DynSolType) -> Result<DataType> {
             let inner_type = to_arrow_dtype(inner_type).context("map inner")?;
             Ok(DataType::FixedSizeList(
                 Arc::new(Field::new("", inner_type, true)),
-                *n as i32,
+                i32::try_from(*n).context("fixed array size exceeds i32")?,
             ))
         }
         DynSolType::Function => Err(anyhow!(
@@ -68,7 +68,11 @@ pub(crate) fn param_to_arrow_dtype(ty: &str, components: &[Param]) -> Result<Dat
             .enumerate()
             .map(|(i, c)| {
                 let inner = param_to_arrow_dtype(&c.ty, &c.components)?;
-                let name = if c.name.is_empty() { format!("param{i}") } else { c.name.clone() };
+                let name = if c.name.is_empty() {
+                    format!("param{i}")
+                } else {
+                    c.name.clone()
+                };
                 Ok(Arc::new(Field::new(name, inner, true)))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -76,7 +80,12 @@ pub(crate) fn param_to_arrow_dtype(ty: &str, components: &[Param]) -> Result<Dat
     } else if !components.is_empty() {
         // Array-of-tuple or other complex type: use DynSolType resolution so the
         // schema matches the unnamed fields produced by to_arrow / to_struct.
-        let p = Param { ty: ty.to_string(), name: String::new(), components: components.to_vec(), internal_type: None };
+        let p = Param {
+            ty: ty.to_string(),
+            name: String::new(),
+            components: components.to_vec(),
+            internal_type: None,
+        };
         let sol_type = p.resolve().map_err(|e| anyhow!("{e}"))?;
         to_arrow_dtype(&sol_type)
     } else {
@@ -450,11 +459,19 @@ fn to_fixed_list(
         to_arrow_dtype(sol_type).context("construct data type")?,
         true,
     ));
-    let null_buf = if all_valid { None } else { Some(NullBuffer::from(validity)) };
+    let null_buf = if all_valid {
+        None
+    } else {
+        Some(NullBuffer::from(validity))
+    };
 
-    let list_arr =
-        FixedSizeListArray::try_new(field, n as i32, inner_values, null_buf)
-            .context("construct fixed size list array")?;
+    let list_arr = FixedSizeListArray::try_new(
+        field,
+        i32::try_from(n).context("array size exceeds i32")?,
+        inner_values,
+        null_buf,
+    )
+    .context("construct fixed size list array")?;
     Ok(Arc::new(list_arr))
 }
 
@@ -614,7 +631,10 @@ pub(crate) fn to_struct_named(
     allow_decode_fail: bool,
 ) -> Result<Arc<dyn Array>> {
     if fields.is_empty() {
-        return Ok(Arc::new(StructArray::new_empty_fields(sol_values.len(), None)));
+        return Ok(Arc::new(StructArray::new_empty_fields(
+            sol_values.len(),
+            None,
+        )));
     }
 
     let mut per_field = vec![Vec::with_capacity(sol_values.len()); fields.len()];
@@ -652,8 +672,10 @@ pub(crate) fn to_struct_named(
     {
         let arr = match (sol_type, comps) {
             (DynSolType::Tuple(sub_fields), comps) if !comps.is_empty() => {
-                let sub_named: Vec<(&str, &[Param])> =
-                    comps.iter().map(|c| (c.name.as_str(), c.components.as_slice())).collect();
+                let sub_named: Vec<(&str, &[Param])> = comps
+                    .iter()
+                    .map(|c| (c.name.as_str(), c.components.as_slice()))
+                    .collect();
                 to_struct_named(sub_fields, &sub_named, field_vals, allow_decode_fail)?
             }
             _ => to_arrow(sol_type, field_vals, allow_decode_fail)?,
@@ -666,7 +688,11 @@ pub(crate) fn to_struct_named(
         .enumerate()
         .zip(arrays.iter())
         .map(|((i, &(name, _)), arr)| {
-            let n = if name.is_empty() { format!("param{i}") } else { name.to_string() };
+            let n = if name.is_empty() {
+                format!("param{i}")
+            } else {
+                name.to_string()
+            };
             Field::new(n, arr.data_type().clone(), true)
         })
         .collect::<Vec<_>>();
@@ -731,17 +757,18 @@ pub(crate) fn decode_body_named<I: OffsetSizeTrait>(
         }
     }
 
-    let named: Vec<(&str, &[Param])> =
-        body_params.iter().map(|p| (p.name.as_str(), p.components.as_slice())).collect();
+    let named: Vec<(&str, &[Param])> = body_params
+        .iter()
+        .map(|p| (p.name.as_str(), p.components.as_slice()))
+        .collect();
 
     let body_sol_types = match body_sol_type {
         DynSolType::Tuple(f) => f.as_slice(),
         _ => return Err(anyhow!("body_sol_type must be DynSolType::Tuple")),
     };
 
-    let body_array =
-        to_struct_named(body_sol_types, &named, body_decoded, allow_decode_fail)
-            .context("build body struct")?;
+    let body_array = to_struct_named(body_sol_types, &named, body_decoded, allow_decode_fail)
+        .context("build body struct")?;
 
     let arr = body_array
         .as_any()

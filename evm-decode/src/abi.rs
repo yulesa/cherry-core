@@ -108,7 +108,12 @@ fn func_decode_signature(func: &alloy_json_abi::Function) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!("{}({})({})", func.name, fmt_params(&func.inputs), fmt_params(&func.outputs))
+    format!(
+        "{}({})({})",
+        func.name,
+        fmt_params(&func.inputs),
+        fmt_params(&func.outputs)
+    )
 }
 
 /// Parse a JSON ABI string and extract all events.
@@ -124,7 +129,7 @@ pub fn abi_events(json_str: &str) -> Result<Vec<EvmAbiEvent>> {
             selector_signature: event.signature(),
             topic0: format!("0x{}", faster_hex::hex_string(selector.as_slice())),
             abi_json: serde_json::to_string(event)
-                .expect("alloy_json_abi::Event serialization is infallible"),
+                .context("alloy_json_abi::Event serialization")?,
         });
     }
     Ok(events)
@@ -143,7 +148,7 @@ pub fn abi_functions(json_str: &str) -> Result<Vec<EvmAbiFunction>> {
             selector_signature: func.signature(),
             selector: format!("0x{}", faster_hex::hex_string(selector.as_slice())),
             abi_json: serde_json::to_string(func)
-                .expect("alloy_json_abi::Function serialization is infallible"),
+                .context("alloy_json_abi::Function serialization")?,
         });
     }
     Ok(functions)

@@ -548,7 +548,7 @@ fn expand_column(
         DataType::FixedSizeList(inner_field, n)
             if matches!(inner_field.data_type(), DataType::Struct(_)) =>
         {
-            let n = *n as usize;
+            let n = usize::try_from(*n).context("FixedSizeList size must be non-negative")?;
             let list_arr = col
                 .as_any()
                 .downcast_ref::<FixedSizeListArray>()
@@ -557,18 +557,24 @@ fn expand_column(
             let num_rows = list_arr.len();
 
             for i in 0..n {
-                let indices: Int32Array = (0..num_rows).map(|r| (r * n + i) as i32).collect();
+                let indices: Int32Array = (0..num_rows)
+                    .map(|r| i32::try_from(r * n + i).context("index overflows i32"))
+                    .collect::<Result<Vec<_>>>()?
+                    .into();
                 let element = arrow::compute::take(values.as_ref(), &indices, None)
                     .context("take element from FixedSizeList")?;
                 let element = propagate_nulls(list_arr.nulls(), element);
-                expand_column(&format!("{}.{}", name, i), &element, out_fields, out_arrays)?;
+                expand_column(&format!("{name}.{i}"), &element, out_fields, out_arrays)?;
             }
         }
         DataType::List(inner_field) if matches!(inner_field.data_type(), DataType::Struct(_)) => {
             let str_col = arrow::compute::cast_with_options(
                 col.as_ref(),
                 &DataType::Utf8,
-                &CastOptions { safe: true, ..Default::default() },
+                &CastOptions {
+                    safe: true,
+                    ..Default::default()
+                },
             )
             .context("cast List<Struct> to Utf8")?;
             out_fields.push(Arc::new(Field::new(name, DataType::Utf8, true)));
@@ -585,15 +591,15 @@ fn expand_column(
 fn expand_field(name: &str, dtype: &DataType, out: &mut Vec<Arc<Field>>) {
     match dtype {
         DataType::Struct(inner_fields) => {
-            for f in inner_fields.iter() {
+            for f in inner_fields {
                 expand_field(&format!("{}.{}", name, f.name()), f.data_type(), out);
             }
         }
         DataType::FixedSizeList(inner_field, n)
             if matches!(inner_field.data_type(), DataType::Struct(_)) =>
         {
-            for i in 0..(*n as usize) {
-                expand_field(&format!("{}.{}", name, i), inner_field.data_type(), out);
+            for i in 0..usize::try_from(*n).unwrap_or(0) {
+                expand_field(&format!("{name}.{i}"), inner_field.data_type(), out);
             }
         }
         DataType::List(inner_field) if matches!(inner_field.data_type(), DataType::Struct(_)) => {
@@ -626,7 +632,7 @@ fn propagate_nulls(parent_nulls: Option<&NullBuffer>, col: Arc<dyn Array>) -> Ar
 
 /// Renames duplicate field names: the first occurrence keeps its name, subsequent
 /// ones become `name_1`, `name_2`, etc.
-fn resolve_name_collisions(fields: &mut Vec<Arc<Field>>) {
+fn resolve_name_collisions(fields: &mut [Arc<Field>]) {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for f in fields.iter() {
         *counts.entry(f.name().clone()).or_insert(0) += 1;
@@ -637,9 +643,12 @@ fn resolve_name_collisions(fields: &mut Vec<Arc<Field>>) {
         if *counts.get(&name).unwrap_or(&0) > 1 {
             let idx = seen.entry(name.clone()).or_insert(0);
             if *idx > 0 {
-                let new_name = format!("{}_{}", name, idx);
-                *field =
-                    Arc::new(Field::new(new_name, field.data_type().clone(), field.is_nullable()));
+                let new_name = format!("{name}_{idx}");
+                *field = Arc::new(Field::new(
+                    new_name,
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                ));
             }
             *idx += 1;
         }

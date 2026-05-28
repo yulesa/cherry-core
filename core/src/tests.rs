@@ -12,7 +12,7 @@ async fn erc20(cfg: tiders_ingest::ProviderConfig, query: tiders_ingest::Query) 
     while let Some(v) = stream.next().await {
         let v = v.unwrap();
         let decoded =
-            decode_events(signature, v.get("logs").unwrap(), false, false, false).unwrap();
+            decode_events(signature, v.get("logs").unwrap(), false, false, false, false).unwrap();
         dbg!(decoded);
     }
 }
@@ -98,7 +98,7 @@ async fn decode_nested_list() {
     let logs = res.data.logs.iter().map(polars_arrow_to_arrow_rs);
 
     for batch in logs {
-        let decoded = decode_events(signature, &batch, false, false, false).unwrap();
+        let decoded = decode_events(signature, &batch, false, false, false, false).unwrap();
 
         dbg!(decoded);
     }

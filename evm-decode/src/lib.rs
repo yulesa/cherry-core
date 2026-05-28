@@ -57,12 +57,17 @@ pub fn abi_to_topic0(abi_json: &str) -> Result<[u8; 32]> {
 ///
 /// Writes `null` for data rows that fail to decode if `allow_decode_fail` is set to `true`.
 /// Errors when a row fails to decode if `allow_decode_fail` is set to `false`.
+///
+/// When `large_int_as_binary` is `true`, signed and unsigned integers wider than
+/// 64 bits are emitted as 32-byte big-endian `Binary` columns (two's-complement
+/// for signed) instead of `Decimal128`/`Decimal256`.
 pub fn decode_call_inputs<I: OffsetSizeTrait>(
     signature: &str,
     data: &GenericBinaryArray<I>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<RecordBatch> {
-    decode_call_impl::<true, I>(signature, data, allow_decode_fail)
+    decode_call_impl::<true, I>(signature, data, allow_decode_fail, large_int_as_binary)
 }
 
 /// Decodes given call output data in arrow format to arrow format.
@@ -71,22 +76,28 @@ pub fn decode_call_inputs<I: OffsetSizeTrait>(
 ///
 /// Writes `null` for data rows that fail to decode if `allow_decode_fail` is set to `true`.
 /// Errors when a row fails to decode if `allow_decode_fail` is set to `false`.
+///
+/// When `large_int_as_binary` is `true`, signed and unsigned integers wider than
+/// 64 bits are emitted as 32-byte big-endian `Binary` columns (two's-complement
+/// for signed) instead of `Decimal128`/`Decimal256`.
 pub fn decode_call_outputs<I: OffsetSizeTrait>(
     signature: &str,
     data: &GenericBinaryArray<I>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<RecordBatch> {
-    decode_call_impl::<false, I>(signature, data, allow_decode_fail)
+    decode_call_impl::<false, I>(signature, data, allow_decode_fail, large_int_as_binary)
 }
 
 fn decode_call_impl<const IS_INPUT: bool, I: OffsetSizeTrait>(
     signature: &str,
     data: &GenericBinaryArray<I>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<RecordBatch> {
     let (func, resolved) = resolve_function_signature(signature)?;
 
-    let schema = function_signature_to_arrow_schemas_impl(&func)
+    let schema = function_signature_to_arrow_schemas_impl(&func, large_int_as_binary)
         .context("convert function signature to arrow schema")?;
     let schema = if IS_INPUT { schema.0 } else { schema.1 };
 
@@ -130,8 +141,14 @@ fn decode_call_impl<const IS_INPUT: bool, I: OffsetSizeTrait>(
         .map(|p| (p.name.as_str(), p.components.as_slice()))
         .collect();
 
-    let array = to_struct_named(&sol_fields, &named, decoded, allow_decode_fail)
-        .context("map params to arrow")?;
+    let array = to_struct_named(
+        &sol_fields,
+        &named,
+        decoded,
+        allow_decode_fail,
+        large_int_as_binary,
+    )
+    .context("map params to arrow")?;
     let arr = array
         .as_any()
         .downcast_ref::<StructArray>()
@@ -147,9 +164,16 @@ fn decode_call_impl<const IS_INPUT: bool, I: OffsetSizeTrait>(
 }
 
 /// Returns the Arrow schemas for a function's inputs and outputs as `(input_schema, output_schema)`.
-pub fn function_signature_to_arrow_schemas(signature: &str) -> Result<(Schema, Schema)> {
+///
+/// `large_int_as_binary` must match the value passed to [`decode_call_inputs`] /
+/// [`decode_call_outputs`] for the resulting batch to match this schema.
+pub fn function_signature_to_arrow_schemas(
+    signature: &str,
+    large_int_as_binary: bool,
+) -> Result<(Schema, Schema)> {
     let (func, _) = resolve_function_signature(signature)?;
-    let (input_schema, output_schema) = function_signature_to_arrow_schemas_impl(&func)?;
+    let (input_schema, output_schema) =
+        function_signature_to_arrow_schemas_impl(&func, large_int_as_binary)?;
     Ok((
         tiders_cast::flatten_schema(&input_schema),
         tiders_cast::flatten_schema(&output_schema),
@@ -158,13 +182,14 @@ pub fn function_signature_to_arrow_schemas(signature: &str) -> Result<(Schema, S
 
 fn function_signature_to_arrow_schemas_impl(
     func: &alloy_json_abi::Function,
+    large_int_as_binary: bool,
 ) -> Result<(Schema, Schema)> {
     let mut input_fields = Vec::with_capacity(func.inputs.len());
     let mut output_fields = Vec::with_capacity(func.outputs.len());
 
     for (i, param) in func.inputs.iter().enumerate() {
-        let dtype =
-            param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
+        let dtype = param_to_arrow_dtype(&param.ty, &param.components, large_int_as_binary)
+            .context("map to arrow type")?;
         let name = if param.name.is_empty() {
             format!("param{i}")
         } else {
@@ -174,8 +199,8 @@ fn function_signature_to_arrow_schemas_impl(
     }
 
     for (i, param) in func.outputs.iter().enumerate() {
-        let dtype =
-            param_to_arrow_dtype(&param.ty, &param.components).context("map to arrow type")?;
+        let dtype = param_to_arrow_dtype(&param.ty, &param.components, large_int_as_binary)
+            .context("map to arrow type")?;
         let name = if param.name.is_empty() {
             format!("param{i}")
         } else {
@@ -225,12 +250,17 @@ fn resolve_function_signature(signature: &str) -> Result<(alloy_json_abi::Functi
 ///
 /// Writes `null` for data rows that fail to decode if `allow_decode_fail` is set to `true`.
 /// Errors when a row fails to decode if `allow_decode_fail` is set to `false`.
+///
+/// When `large_int_as_binary` is `true`, signed and unsigned integers wider than
+/// 64 bits are emitted as 32-byte big-endian `Binary` columns (two's-complement
+/// for signed) instead of `Decimal128`/`Decimal256`.
 pub fn decode_events(
     signature: &str,
     data: &RecordBatch,
     allow_decode_fail: bool,
     filter_by_topic0: bool,
     hstack: bool,
+    large_int_as_binary: bool,
 ) -> Result<RecordBatch> {
     let (event, resolved) = resolve_event_signature(signature)?;
 
@@ -241,7 +271,7 @@ pub fn decode_events(
         data.clone()
     };
 
-    let schema = event_signature_to_arrow_schema_impl(&event)
+    let schema = event_signature_to_arrow_schema_impl(&event, large_int_as_binary)
         .context("convert event signature to arrow schema")?;
 
     let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
@@ -261,13 +291,27 @@ pub fn decode_events(
                 .as_any()
                 .downcast_ref::<BinaryArray>()
                 .context("downcast to BinaryArray")?;
-            decode_topic(sol_type, arr, allow_decode_fail, &mut arrays).context("decode topic")?;
+            decode_topic(
+                sol_type,
+                arr,
+                allow_decode_fail,
+                large_int_as_binary,
+                &mut arrays,
+            )
+            .context("decode topic")?;
         } else if col.data_type() == &DataType::LargeBinary {
             let arr = col
                 .as_any()
                 .downcast_ref::<LargeBinaryArray>()
                 .context("downcast to LargeBinaryArray")?;
-            decode_topic(sol_type, arr, allow_decode_fail, &mut arrays).context("decode topic")?;
+            decode_topic(
+                sol_type,
+                arr,
+                allow_decode_fail,
+                large_int_as_binary,
+                &mut arrays,
+            )
+            .context("decode topic")?;
         }
     }
 
@@ -286,6 +330,7 @@ pub fn decode_events(
             &body_params,
             arr,
             allow_decode_fail,
+            large_int_as_binary,
             &mut arrays,
         )
         .context("decode body")?;
@@ -299,6 +344,7 @@ pub fn decode_events(
             &body_params,
             arr,
             allow_decode_fail,
+            large_int_as_binary,
             &mut arrays,
         )
         .context("decode body")?;
@@ -318,9 +364,15 @@ pub fn decode_events(
 }
 
 /// Returns the Arrow schema that [`decode_events`] would produce for the given event signature.
-pub fn event_signature_to_arrow_schema(signature: &str) -> Result<Schema> {
+///
+/// `large_int_as_binary` must match the value passed to [`decode_events`] for the
+/// resulting batch to match this schema.
+pub fn event_signature_to_arrow_schema(
+    signature: &str,
+    large_int_as_binary: bool,
+) -> Result<Schema> {
     let (event, _) = resolve_event_signature(signature)?;
-    let schema = event_signature_to_arrow_schema_impl(&event)?;
+    let schema = event_signature_to_arrow_schema_impl(&event, large_int_as_binary)?;
     Ok(tiders_cast::flatten_schema(&schema))
 }
 
@@ -329,7 +381,10 @@ pub fn event_signature_to_arrow_schema(signature: &str) -> Result<Schema> {
 /// Indexed params come first (matching the topic decode order), followed by
 /// body params. Tuple params use [`param_to_arrow_dtype`] so component names
 /// are preserved as named `Struct` fields.
-fn event_signature_to_arrow_schema_impl(sig: &alloy_json_abi::Event) -> Result<Schema> {
+fn event_signature_to_arrow_schema_impl(
+    sig: &alloy_json_abi::Event,
+    large_int_as_binary: bool,
+) -> Result<Schema> {
     let mut fields = Vec::<Arc<Field>>::new();
 
     for (i, input) in sig.inputs.iter().enumerate() {
@@ -339,7 +394,7 @@ fn event_signature_to_arrow_schema_impl(sig: &alloy_json_abi::Event) -> Result<S
             } else {
                 input.name.clone()
             };
-            let dtype = param_to_arrow_dtype(&input.ty, &input.components)
+            let dtype = param_to_arrow_dtype(&input.ty, &input.components, large_int_as_binary)
                 .context("map indexed param to arrow type")?;
             fields.push(Arc::new(Field::new(name, dtype, true)));
         }
@@ -351,7 +406,7 @@ fn event_signature_to_arrow_schema_impl(sig: &alloy_json_abi::Event) -> Result<S
             } else {
                 input.name.clone()
             };
-            let dtype = param_to_arrow_dtype(&input.ty, &input.components)
+            let dtype = param_to_arrow_dtype(&input.ty, &input.components, large_int_as_binary)
                 .context("map body param to arrow type")?;
             fields.push(Arc::new(Field::new(name, dtype, true)));
         }
@@ -445,6 +500,239 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Decoding a `uint256` event field whose value is in `[2^255, 2^256 - 1]`
+    /// must succeed losslessly. The cell lands in `Decimal256` with its raw
+    /// 32-byte big-endian bit pattern preserved (so a naive signed reader will
+    /// see a negative value — callers reinterpret as unsigned).
+    #[test]
+    fn test_decode_uint256_above_signed_max() {
+        use arrow::array::{Decimal256Array, GenericBinaryBuilder};
+
+        let sig = "Filled(uint256 tokenId)";
+        let token_id = U256::MAX;
+
+        let selector = signature_to_topic0(sig).unwrap();
+        let mut topic0_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic1_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic2_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic3_b = GenericBinaryBuilder::<i32>::new();
+        let mut data_b = GenericBinaryBuilder::<i32>::new();
+        topic0_b.append_value(selector);
+        topic1_b.append_null();
+        topic2_b.append_null();
+        topic3_b.append_null();
+        data_b.append_value(token_id.to_be_bytes::<32>());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("topic0", DataType::Binary, true),
+            Field::new("topic1", DataType::Binary, true),
+            Field::new("topic2", DataType::Binary, true),
+            Field::new("topic3", DataType::Binary, true),
+            Field::new("data", DataType::Binary, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(topic0_b.finish()),
+                Arc::new(topic1_b.finish()),
+                Arc::new(topic2_b.finish()),
+                Arc::new(topic3_b.finish()),
+                Arc::new(data_b.finish()),
+            ],
+        )
+        .unwrap();
+
+        let result = decode_events(sig, &batch, false, false, false, false).unwrap();
+        let col = result
+            .column_by_name("tokenId")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal256Array>()
+            .unwrap();
+        let expected = arrow::datatypes::i256::from_be_bytes(token_id.to_be_bytes::<32>());
+        assert_eq!(col.value(0), expected);
+    }
+
+    /// Same shape as the uint256 case, but for `uint128`. The cell lands in
+    /// `Decimal128` with the low 16 bytes equal to `u128::MAX`.
+    #[test]
+    fn test_decode_uint128_above_signed_max() {
+        use arrow::array::{Decimal128Array, GenericBinaryBuilder};
+
+        let sig = "Filled(uint128 amount)";
+        let amount = u128::MAX;
+
+        let selector = signature_to_topic0(sig).unwrap();
+        let mut topic0_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic1_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic2_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic3_b = GenericBinaryBuilder::<i32>::new();
+        let mut data_b = GenericBinaryBuilder::<i32>::new();
+        topic0_b.append_value(selector);
+        topic1_b.append_null();
+        topic2_b.append_null();
+        topic3_b.append_null();
+        // uint128 is zero-extended to 32 bytes on the wire.
+        let mut body = [0u8; 32];
+        body[16..].copy_from_slice(&amount.to_be_bytes());
+        data_b.append_value(body);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("topic0", DataType::Binary, true),
+            Field::new("topic1", DataType::Binary, true),
+            Field::new("topic2", DataType::Binary, true),
+            Field::new("topic3", DataType::Binary, true),
+            Field::new("data", DataType::Binary, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(topic0_b.finish()),
+                Arc::new(topic1_b.finish()),
+                Arc::new(topic2_b.finish()),
+                Arc::new(topic3_b.finish()),
+                Arc::new(data_b.finish()),
+            ],
+        )
+        .unwrap();
+
+        let result = decode_events(sig, &batch, false, false, false, false).unwrap();
+        let col = result
+            .column_by_name("amount")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        // u128::MAX reinterpreted as i128 is -1.
+        assert_eq!(col.value(0), -1i128);
+    }
+
+    /// With `large_int_as_binary=true`, wide ints become 32-byte BE Binary.
+    /// Exercises both an indexed `uint256` topic and a body `uint256` so both
+    /// decode paths are covered. Also cross-checks that the generated schema
+    /// matches the produced batch when called with the same flag.
+    #[test]
+    fn test_decode_large_uint_as_binary() {
+        use arrow::array::{BinaryArray, GenericBinaryBuilder};
+
+        let sig = "Filled(uint256 indexed indexedId, uint256 bodyId)";
+        let indexed_id = U256::MAX;
+        let body_id = U256::MAX - U256::from(1u64);
+
+        let selector = signature_to_topic0(sig).unwrap();
+        let mut topic0_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic1_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic2_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic3_b = GenericBinaryBuilder::<i32>::new();
+        let mut data_b = GenericBinaryBuilder::<i32>::new();
+        topic0_b.append_value(selector);
+        topic1_b.append_value(indexed_id.to_be_bytes::<32>());
+        topic2_b.append_null();
+        topic3_b.append_null();
+        data_b.append_value(body_id.to_be_bytes::<32>());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("topic0", DataType::Binary, true),
+            Field::new("topic1", DataType::Binary, true),
+            Field::new("topic2", DataType::Binary, true),
+            Field::new("topic3", DataType::Binary, true),
+            Field::new("data", DataType::Binary, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(topic0_b.finish()),
+                Arc::new(topic1_b.finish()),
+                Arc::new(topic2_b.finish()),
+                Arc::new(topic3_b.finish()),
+                Arc::new(data_b.finish()),
+            ],
+        )
+        .unwrap();
+
+        let result = decode_events(sig, &batch, false, false, false, true).unwrap();
+
+        let indexed_col = result
+            .column_by_name("indexedId")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        assert_eq!(indexed_col.value(0), &indexed_id.to_be_bytes::<32>());
+        assert_eq!(indexed_col.value(0).len(), 32);
+
+        let body_col = result
+            .column_by_name("bodyId")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        assert_eq!(body_col.value(0), &body_id.to_be_bytes::<32>());
+
+        // Schema produced with the same flag must match the resulting batch.
+        let schema_from_sig = event_signature_to_arrow_schema(sig, true).unwrap();
+        assert_eq!(
+            schema_from_sig.field_with_name("indexedId").unwrap().data_type(),
+            &DataType::Binary
+        );
+        assert_eq!(
+            schema_from_sig.field_with_name("bodyId").unwrap().data_type(),
+            &DataType::Binary
+        );
+    }
+
+    /// Signed `int256` with `large_int_as_binary=true` preserves two's-complement
+    /// in the 32-byte BE word: `I256::MIN` becomes `0x80` followed by 31 `0x00`.
+    #[test]
+    fn test_decode_int256_as_binary() {
+        use arrow::array::{BinaryArray, GenericBinaryBuilder};
+
+        let sig = "Signed(int256 value)";
+        let value = I256::MIN;
+
+        let selector = signature_to_topic0(sig).unwrap();
+        let mut topic0_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic1_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic2_b = GenericBinaryBuilder::<i32>::new();
+        let mut topic3_b = GenericBinaryBuilder::<i32>::new();
+        let mut data_b = GenericBinaryBuilder::<i32>::new();
+        topic0_b.append_value(selector);
+        topic1_b.append_null();
+        topic2_b.append_null();
+        topic3_b.append_null();
+        data_b.append_value(value.to_be_bytes::<32>());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("topic0", DataType::Binary, true),
+            Field::new("topic1", DataType::Binary, true),
+            Field::new("topic2", DataType::Binary, true),
+            Field::new("topic3", DataType::Binary, true),
+            Field::new("data", DataType::Binary, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(topic0_b.finish()),
+                Arc::new(topic1_b.finish()),
+                Arc::new(topic2_b.finish()),
+                Arc::new(topic3_b.finish()),
+                Arc::new(data_b.finish()),
+            ],
+        )
+        .unwrap();
+
+        let result = decode_events(sig, &batch, false, false, false, true).unwrap();
+        let col = result
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        let mut expected = [0u8; 32];
+        expected[0] = 0x80;
+        assert_eq!(col.value(0), &expected);
+    }
+
     #[test]
     fn test_topic0_filtering_with_allow_decode_fail() {
         use arrow::array::GenericBinaryBuilder;
@@ -511,11 +799,11 @@ mod tests {
         .unwrap();
 
         // With filter_by_topic0=true, should filter to only the Swap row
-        let result = decode_events(swap_sig, &batch, true, true, false).unwrap();
+        let result = decode_events(swap_sig, &batch, true, true, false, false).unwrap();
         assert_eq!(result.num_rows(), 1, "should only decode the Swap row");
 
         // With filter_by_topic0=true and hstack=true, decoded + input columns are returned
-        let result = decode_events(swap_sig, &batch, true, true, true).unwrap();
+        let result = decode_events(swap_sig, &batch, true, true, true, false).unwrap();
         assert_eq!(result.num_rows(), 1);
         // Should have decoded columns + original input columns
         assert!(
@@ -605,7 +893,7 @@ mod tests {
         builder.append_value(&calldata);
         let col = builder.finish();
 
-        let result = decode_call_inputs(abi_json, &col, false).unwrap();
+        let result = decode_call_inputs(abi_json, &col, false, false).unwrap();
 
         assert_eq!(result.num_rows(), 1);
 
@@ -812,7 +1100,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = decode_events(abi_json, &batch, false, false, false).unwrap();
+        let result = decode_events(abi_json, &batch, false, false, false, false).unwrap();
 
         assert_eq!(result.num_rows(), 1);
 
@@ -902,7 +1190,7 @@ mod tests {
     fn nested_event_signature_to_schema() {
         let sig = "ConfiguredQuests(address editor, uint256[][], address indexed my_addr, (bool,bool[],(bool, uint256[]))[] questDetails)";
 
-        let schema = event_signature_to_arrow_schema(sig).unwrap();
+        let schema = event_signature_to_arrow_schema(sig, false).unwrap();
 
         let expected_schema = Schema::new(vec![
             Arc::new(Field::new("my_addr", DataType::Binary, true)),
@@ -980,7 +1268,7 @@ mod tests {
         let signature =
             "PairCreated(address indexed token0, address indexed token1, address pair,uint256)";
 
-        let decoded = decode_events(signature, &logs, false, false, false).unwrap();
+        let decoded = decode_events(signature, &logs, false, false, false, false).unwrap();
 
         // Save the filtered instructions to a new parquet file
         let mut file = File::create("decoded_logs.parquet").unwrap();

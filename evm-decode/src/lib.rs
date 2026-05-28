@@ -254,6 +254,7 @@ fn resolve_function_signature(signature: &str) -> Result<(alloy_json_abi::Functi
 /// When `large_int_as_binary` is `true`, signed and unsigned integers wider than
 /// 64 bits are emitted as 32-byte big-endian `Binary` columns (two's-complement
 /// for signed) instead of `Decimal128`/`Decimal256`.
+#[expect(clippy::fn_params_excessive_bools, reason = "stable public API")]
 pub fn decode_events(
     signature: &str,
     data: &RecordBatch,
@@ -672,11 +673,17 @@ mod tests {
         // Schema produced with the same flag must match the resulting batch.
         let schema_from_sig = event_signature_to_arrow_schema(sig, true).unwrap();
         assert_eq!(
-            schema_from_sig.field_with_name("indexedId").unwrap().data_type(),
+            schema_from_sig
+                .field_with_name("indexedId")
+                .unwrap()
+                .data_type(),
             &DataType::Binary
         );
         assert_eq!(
-            schema_from_sig.field_with_name("bodyId").unwrap().data_type(),
+            schema_from_sig
+                .field_with_name("bodyId")
+                .unwrap()
+                .data_type(),
             &DataType::Binary
         );
     }

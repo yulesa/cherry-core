@@ -515,6 +515,7 @@ fn evm_decode_call_outputs(
 
 #[pyfunction]
 #[pyo3(signature = (signature, batch, allow_decode_fail=false, filter_by_topic0=false, hstack=false, large_int_as_binary=false))]
+#[expect(clippy::fn_params_excessive_bools, reason = "stable Python API")]
 fn evm_decode_events(
     signature: &str,
     batch: &Bound<'_, PyAny>,

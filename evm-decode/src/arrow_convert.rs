@@ -46,11 +46,13 @@ pub(crate) fn to_arrow_dtype(sol_type: &DynSolType, large_int_as_binary: bool) -
             }
         }
         DynSolType::Array(inner_type) => {
-            let inner_type = to_arrow_dtype(inner_type, large_int_as_binary).context("map inner")?;
+            let inner_type =
+                to_arrow_dtype(inner_type, large_int_as_binary).context("map inner")?;
             Ok(DataType::List(Arc::new(Field::new("", inner_type, true))))
         }
         DynSolType::FixedArray(inner_type, n) => {
-            let inner_type = to_arrow_dtype(inner_type, large_int_as_binary).context("map inner")?;
+            let inner_type =
+                to_arrow_dtype(inner_type, large_int_as_binary).context("map inner")?;
             Ok(DataType::FixedSizeList(
                 Arc::new(Field::new("", inner_type, true)),
                 i32::try_from(*n).context("fixed array size exceeds i32")?,
@@ -183,9 +185,12 @@ pub(crate) fn to_arrow(
                 to_uint(*num_bits, &sol_values, allow_decode_fail)
             }
         }
-        DynSolType::Array(inner_type) => {
-            to_list(inner_type, sol_values, allow_decode_fail, large_int_as_binary)
-        }
+        DynSolType::Array(inner_type) => to_list(
+            inner_type,
+            sol_values,
+            allow_decode_fail,
+            large_int_as_binary,
+        ),
         DynSolType::FixedArray(inner_type, n) => to_fixed_list(
             inner_type,
             *n,
@@ -294,7 +299,8 @@ fn to_decimal128(num_bits: usize, sol_values: &[Option<DynSolValue>]) -> Result<
                     return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
                 }
                 let bytes = v.to_be_bytes::<32>();
-                let lo: [u8; 16] = bytes[16..].try_into().unwrap();
+                let mut lo = [0u8; 16];
+                lo.copy_from_slice(&bytes[16..]);
                 builder.append_value(i128::from_be_bytes(lo));
             }
             Some(DynSolValue::Uint(v, nb)) => {
@@ -302,7 +308,8 @@ fn to_decimal128(num_bits: usize, sol_values: &[Option<DynSolValue>]) -> Result<
                     return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
                 }
                 let bytes = v.to_be_bytes::<32>();
-                let lo: [u8; 16] = bytes[16..].try_into().unwrap();
+                let mut lo = [0u8; 16];
+                lo.copy_from_slice(&bytes[16..]);
                 builder.append_value(i128::from_be_bytes(lo));
             }
             Some(other) => {
@@ -455,8 +462,8 @@ fn to_list(
         }
     }
 
-    let values = to_arrow(sol_type, values, allow_decode_fail, large_int_as_binary)
-        .context("map inner")?;
+    let values =
+        to_arrow(sol_type, values, allow_decode_fail, large_int_as_binary).context("map inner")?;
     let field = Field::new(
         "",
         to_arrow_dtype(sol_type, large_int_as_binary).context("construct data type")?,
@@ -514,8 +521,8 @@ fn to_fixed_list(
         }
     }
 
-    let inner_values = to_arrow(sol_type, values, allow_decode_fail, large_int_as_binary)
-        .context("map inner")?;
+    let inner_values =
+        to_arrow(sol_type, values, allow_decode_fail, large_int_as_binary).context("map inner")?;
     let field = Arc::new(Field::new(
         "",
         to_arrow_dtype(sol_type, large_int_as_binary).context("construct data type")?,

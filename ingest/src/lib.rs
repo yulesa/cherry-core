@@ -364,8 +364,7 @@ mod tests {
         // let to_block = 18_001_000u64;
 
         let mut provider_config = ProviderConfig::new(ProviderKind::Sqd);
-        provider_config.url =
-            Some("https://portal.sqd.dev/datasets/ethereum-mainnet".to_string());
+        provider_config.url = Some("https://portal.sqd.dev/datasets/ethereum-mainnet".to_string());
         provider_config.stop_on_head = true;
 
         // let mut provider_config = ProviderConfig::new(ProviderKind::Hypersync);
@@ -409,13 +408,23 @@ mod tests {
 
             // Every yielded last_block must sit inside the requested window.
             if let Some(lb) = item.last_block {
-                assert!(lb >= from_block, "last_block {} < from_block {}", lb, from_block);
+                assert!(
+                    lb >= from_block,
+                    "last_block {} < from_block {}",
+                    lb,
+                    from_block
+                );
                 assert!(lb <= to_block, "last_block {} > to_block {}", lb, to_block);
             }
 
             // Monotonicity across items.
             if let (Some(prev), Some(cur)) = (highest, item.last_block) {
-                assert!(cur >= prev, "last_block went backwards: {} -> {}", prev, cur);
+                assert!(
+                    cur >= prev,
+                    "last_block went backwards: {} -> {}",
+                    prev,
+                    cur
+                );
             }
             if item.last_block.is_some() {
                 highest = item.last_block;
@@ -434,7 +443,10 @@ mod tests {
         // The stream must have delivered at least one Transfer log in a
         // 10-block window of mainnet, and must have reached the configured
         // upper bound by the time it closed.
-        assert!(total_rows > 0, "expected at least one Transfer log in window");
+        assert!(
+            total_rows > 0,
+            "expected at least one Transfer log in window"
+        );
         assert_eq!(highest, Some(to_block));
     }
 }

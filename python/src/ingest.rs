@@ -37,6 +37,10 @@ struct ResponseStream {
 impl ResponseStream {
     /// Configured start block of the query.
     #[getter]
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "pyo3 getter name must match field"
+    )]
     fn from_block(&self) -> u64 {
         self.from_block
     }

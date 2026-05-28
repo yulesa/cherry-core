@@ -505,7 +505,7 @@ fn to_struct(
 
     let mut arrays = Vec::with_capacity(fields.len());
 
-    for ((_, param_type), arr_vals) in fields.iter().zip(inner_values.into_iter()) {
+    for ((_, param_type), arr_vals) in fields.iter().zip(inner_values) {
         arrays.push(
             to_arrow(param_type, arr_vals)
                 .context("Failed to convert struct inner values to arrow")?,

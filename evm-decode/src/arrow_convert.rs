@@ -591,7 +591,7 @@ fn to_struct(
 
     let mut arrays = Vec::with_capacity(fields.len());
 
-    for (sol_type, arr_vals) in fields.iter().zip(values.into_iter()) {
+    for (sol_type, arr_vals) in fields.iter().zip(values) {
         arrays.push(to_arrow(
             sol_type,
             arr_vals,

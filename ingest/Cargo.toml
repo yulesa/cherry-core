@@ -1,6 +1,6 @@
 [package]
 name = "tiders-ingest"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 description = "Library for ingesting evm data using common a query/response format"
 homepage = "https://github.com/yulesa/tiders-core"

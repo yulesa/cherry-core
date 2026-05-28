@@ -6,6 +6,10 @@ concurrency:
 
 on:
   workflow_dispatch: null
+  workflow_call:
+    secrets:
+      PYPI_API_TOKEN:
+        required: true
 
 permissions:
   contents: read

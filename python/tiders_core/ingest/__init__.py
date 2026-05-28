@@ -122,6 +122,25 @@ class ResponseStream:
         """
         return await self.inner.next()
 
+    @property
+    def from_block(self) -> int:
+        """The configured start block of the query."""
+        return self.inner.from_block
+
+    @property
+    def to_block(self) -> Optional[int]:
+        """The configured end block of the query, or ``None`` if streaming to head."""
+        return self.inner.to_block
+
+    @property
+    def last_block(self) -> Optional[int]:
+        """Highest block already returned to the caller via ``next()``.
+
+        ``None`` before the first batch is consumed, or while no returned
+        batch has carried block-id data.
+        """
+        return self.inner.last_block
+
 
 def start_stream(cfg: ProviderConfig, query: Query) -> ResponseStream:
     """Start streaming blockchain data from a provider.

@@ -26,6 +26,8 @@ use std::{collections::BTreeMap, pin::Pin, sync::Arc};
 #[cfg(feature = "pyo3")]
 use anyhow::anyhow;
 use anyhow::{Context, Result};
+use arrow::array::UInt64Array;
+use arrow::compute::kernels::aggregate::max as array_max;
 use arrow::record_batch::RecordBatch;
 use futures_lite::{Stream, StreamExt};
 use provider::common::{evm_query_to_generic, svm_query_to_generic};
@@ -156,7 +158,48 @@ impl<'py> pyo3::FromPyObject<'py> for ProviderKind {
     }
 }
 
-type DataStream = Pin<Box<dyn Stream<Item = Result<BTreeMap<String, RecordBatch>>> + Send + Sync>>;
+/// One yielded chunk from [`start_stream`]: the projected tables plus the
+/// highest block-id observed in this chunk (`None` if the chunk has no rows
+/// in any table carrying a block-id column).
+#[derive(Debug)]
+pub struct StreamItem {
+    pub data: BTreeMap<String, RecordBatch>,
+    pub last_block: Option<u64>,
+}
+
+/// Public stream type returned by [`start_stream`].
+pub type DataStream = Pin<Box<dyn Stream<Item = Result<StreamItem>> + Send + Sync>>;
+
+/// Internal stream type returned by each provider before projection /
+/// `last_block` extraction.
+pub(crate) type ProviderStream =
+    Pin<Box<dyn Stream<Item = Result<BTreeMap<String, RecordBatch>>> + Send + Sync>>;
+
+/// Returns the maximum value across every column in `data` whose name is one
+/// of the known block-id column names (`block_number` for EVM non-block
+/// tables, `number` for the EVM blocks table, `slot` for SVM tables).
+///
+/// Runs against pre-projection batches, where these columns are guaranteed to
+/// be present (they are required by the local query filter step).
+fn extract_last_block(data: &BTreeMap<String, RecordBatch>) -> Option<u64> {
+    const BLOCK_ID_COLUMNS: &[&str] = &["block_number", "number", "slot"];
+
+    let mut out: Option<u64> = None;
+    for batch in data.values() {
+        for col_name in BLOCK_ID_COLUMNS {
+            let Some(col) = batch.column_by_name(col_name) else {
+                continue;
+            };
+            let Some(arr) = col.as_any().downcast_ref::<UInt64Array>() else {
+                continue;
+            };
+            if let Some(m) = array_max(arr) {
+                out = Some(out.map_or(m, |cur| cur.max(m)));
+            }
+        }
+    }
+    out
+}
 
 fn make_req_fields<T: DeserializeOwned>(query: &tiders_query::Query) -> Result<T> {
     let mut req_fields_query = query.clone();
@@ -220,9 +263,10 @@ pub async fn start_stream(provider_config: ProviderConfig, mut query: Query) -> 
         async {
             rayon_async::spawn(move || {
                 res.and_then(move |data| {
+                    let last_block = extract_last_block(&data);
                     let data = tiders_query::run_query(&data, &generic_query)
                         .context("run local query")?;
-                    Ok(data)
+                    Ok(StreamItem { data, last_block })
                 })
             })
             .await
@@ -284,8 +328,8 @@ mod tests {
             rewards: vec![],
         });
         let mut stream = start_stream(provider_config, query).await.unwrap();
-        let data = stream.next().await.unwrap().unwrap();
-        for (k, v) in data.into_iter() {
+        let item = stream.next().await.unwrap().unwrap();
+        for (k, v) in item.data.into_iter() {
             let mut file = File::create(format!("{}.parquet", k)).unwrap();
             let mut writer = ArrowWriter::try_new(&mut file, v.schema(), None).unwrap();
             writer.write(&v).unwrap();
@@ -293,31 +337,104 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn simple_rpc_start_stream() {
-        let mut provider_config = ProviderConfig::new(ProviderKind::Rpc);
-        provider_config.url = Some("http://localhost:8545".to_string());
+    /// End-to-end smoke test for the public `start_stream` surface against the
+    /// SQD ethereum-mainnet portal: fetches ERC-20 Transfer logs over a small
+    /// block range and asserts the `StreamItem` invariants
+    /// (`from_block` / `to_block` are mirrored on the query; `last_block` is
+    /// monotonic, within the requested range, and reaches `to_block` once the
+    /// stream exhausts).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn simple_start_stream() {
+        use crate::evm::{Fields, LogFields, LogRequest, Query as EvmQuery, Topic};
 
-        let query = crate::Query::Evm(evm::Query {
-            from_block: 0,
-            to_block: Some(0),
-            include_all_blocks: true,
-            logs: vec![],
+        // keccak256("Transfer(address,address,uint256)")
+        let transfer_topic0: [u8; 32] = {
+            let mut out = [0u8; 32];
+            faster_hex::hex_decode(
+                b"ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                &mut out,
+            )
+            .unwrap();
+            out
+        };
+
+        let from_block = 18_000_000u64;
+        let to_block = 18_000_010u64;
+        // let to_block = 18_001_000u64;
+
+        let mut provider_config = ProviderConfig::new(ProviderKind::Sqd);
+        provider_config.url =
+            Some("https://portal.sqd.dev/datasets/ethereum-mainnet".to_string());
+        provider_config.stop_on_head = true;
+
+        // let mut provider_config = ProviderConfig::new(ProviderKind::Hypersync);
+        // provider_config.url =
+        //     Some("https://eth.hypersync.xyz/".to_string());
+        // provider_config.stop_on_head = true;
+        // provider_config.bearer_token = Some("add_token".to_string());
+
+        let mut fields = Fields::default();
+        fields.log = LogFields {
+            log_index: true,
+            block_number: true,
+            address: true,
+            topic0: true,
+            ..LogFields::default()
+        };
+
+        let query = crate::Query::Evm(EvmQuery {
+            from_block,
+            to_block: Some(to_block),
+            include_all_blocks: false,
+            logs: vec![LogRequest {
+                topic0: vec![Topic(transfer_topic0)],
+                ..LogRequest::default()
+            }],
             transactions: vec![],
             traces: vec![],
-            fields: evm::Fields::all(),
+            fields,
         });
 
         let mut stream = start_stream(provider_config, query).await.unwrap();
-        let data = stream.next().await.unwrap().unwrap();
 
-        // The RPC provider returns empty batches (Part 1 scaffolding).
-        // `run_query` post-filters, so only tables referenced in the
-        // generic query survive. `include_all_blocks` guarantees "blocks".
-        assert!(data.contains_key("blocks"));
+        println!("from_block={} to_block={}", from_block, to_block);
 
-        for (_name, batch) in &data {
-            assert_eq!(batch.num_rows(), 0);
+        let mut highest: Option<u64> = None;
+        let mut total_rows: usize = 0;
+
+        while let Some(res) = stream.next().await {
+            let item = res.unwrap();
+            println!("item last_block={:?}", item.last_block);
+
+            // Every yielded last_block must sit inside the requested window.
+            if let Some(lb) = item.last_block {
+                assert!(lb >= from_block, "last_block {} < from_block {}", lb, from_block);
+                assert!(lb <= to_block, "last_block {} > to_block {}", lb, to_block);
+            }
+
+            // Monotonicity across items.
+            if let (Some(prev), Some(cur)) = (highest, item.last_block) {
+                assert!(cur >= prev, "last_block went backwards: {} -> {}", prev, cur);
+            }
+            if item.last_block.is_some() {
+                highest = item.last_block;
+            }
+
+            if let Some(logs) = item.data.get("logs") {
+                total_rows += logs.num_rows();
+            }
         }
+
+        println!(
+            "final: from_block={} to_block={} last_block={:?} total_rows={}",
+            from_block, to_block, highest, total_rows
+        );
+
+        // The stream must have delivered at least one Transfer log in a
+        // 10-block window of mainnet, and must have reached the configured
+        // upper bound by the time it closed.
+        assert!(total_rows > 0, "expected at least one Transfer log in window");
+        assert_eq!(highest, Some(to_block));
     }
 }

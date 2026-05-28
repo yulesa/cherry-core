@@ -1,11 +1,11 @@
 //! Direct JSON-RPC provider for EVM blockchain data.
 
-use crate::{evm, DataStream, ProviderConfig, Query, RpcTraceMethod};
+use crate::{evm, ProviderConfig, ProviderStream, Query, RpcTraceMethod};
 use anyhow::{anyhow, Context, Result};
 use futures_lite::StreamExt;
 use tiders_rpc_client::{Client, ClientConfig};
 
-pub fn start_stream(provider_config: &ProviderConfig, query: Query) -> Result<DataStream> {
+pub fn start_stream(provider_config: &ProviderConfig, query: Query) -> Result<ProviderStream> {
     let evm_query = match query {
         Query::Evm(q) => q,
         Query::Svm(_) => return Err(anyhow!("RPC provider does not support SVM queries")),

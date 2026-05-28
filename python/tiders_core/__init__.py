@@ -251,6 +251,26 @@ def u256_to_binary(data: pyarrow.RecordBatch) -> pyarrow.RecordBatch:
     return cc.u256_to_binary(data)
 
 
+def large_ints_to_binary(data: pyarrow.RecordBatch) -> pyarrow.RecordBatch:
+    """Convert large-integer Decimal columns to fixed-width big-endian binary.
+
+    Rewrites scale-0 ``Decimal256`` columns to 32-byte ``Binary`` and scale-0
+    ``Decimal128`` columns to 16-byte ``Binary`` using two's-complement
+    encoding. Other columns pass through unchanged.
+
+    Produces the same byte representation as ``evm_decode_events`` (and
+    related decoders) with ``large_int_as_binary=True``, so a Decimal-shaped
+    batch and a binary-shaped batch can be compared after applying this cast.
+
+    Args:
+        data: A RecordBatch that may contain Decimal128 / Decimal256 columns.
+
+    Returns:
+        A new RecordBatch with matching Decimal columns replaced by Binary.
+    """
+    return cc.large_ints_to_binary(data)
+
+
 def svm_decode_instructions(
     signature: svm_decode.InstructionSignature,
     batch: pyarrow.RecordBatch,

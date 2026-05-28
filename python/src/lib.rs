@@ -60,6 +60,7 @@ fn tiders_core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(u256_column_from_binary, m)?)?;
     m.add_function(wrap_pyfunction!(u256_column_to_binary, m)?)?;
     m.add_function(wrap_pyfunction!(u256_to_binary, m)?)?;
+    m.add_function(wrap_pyfunction!(large_ints_to_binary, m)?)?;
     m.add_function(wrap_pyfunction!(svm_decode_instructions, m)?)?;
     m.add_function(wrap_pyfunction!(svm_decode_logs, m)?)?;
     m.add_function(wrap_pyfunction!(instruction_signature_to_arrow_schema, m)?)?;
@@ -204,6 +205,16 @@ fn u256_to_binary(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject
     let batch = RecordBatch::from_pyarrow_bound(batch).context("convert batch from pyarrow")?;
 
     let batch = baselib::cast::u256_to_binary(&batch).context("map u256 columns to binary")?;
+
+    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
+}
+
+#[pyfunction]
+fn large_ints_to_binary(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+    let batch = RecordBatch::from_pyarrow_bound(batch).context("convert batch from pyarrow")?;
+
+    let batch =
+        baselib::cast::large_ints_to_binary(&batch).context("map large int columns to binary")?;
 
     Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
 }

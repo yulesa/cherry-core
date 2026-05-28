@@ -1,7 +1,7 @@
 //! HyperSync provider for fast historical EVM blockchain data.
 
 use super::common::field_selection_to_set;
-use crate::{evm, DataStream, ProviderConfig, Query};
+use crate::{evm, ProviderConfig, ProviderStream, Query};
 use anyhow::{anyhow, Context, Result};
 use arrow::array::ListBuilder;
 use arrow::array::{builder, new_null_array, Array, BinaryArray, BinaryBuilder, RecordBatch};
@@ -109,7 +109,7 @@ pub fn query_to_hypersync(query: &evm::Query) -> Result<hypersync_nt::Query> {
     })
 }
 
-pub async fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<DataStream> {
+pub async fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<ProviderStream> {
     if cfg.compute_units_per_second.is_some()
         || cfg.batch_size.is_some()
         || cfg.reorg_safe_distance.is_some()

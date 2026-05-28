@@ -1,6 +1,6 @@
 //! SQD Network provider for historical EVM and SVM blockchain data.
 
-use crate::{evm, svm, DataStream, ProviderConfig, Query};
+use crate::{evm, svm, ProviderConfig, ProviderStream, Query};
 use anyhow::{anyhow, Context, Result};
 use futures_lite::StreamExt;
 use log::warn;
@@ -543,7 +543,7 @@ fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
     }
 }
 
-pub fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<DataStream> {
+pub fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<ProviderStream> {
     if cfg.compute_units_per_second.is_some()
         || cfg.batch_size.is_some()
         || cfg.reorg_safe_distance.is_some()

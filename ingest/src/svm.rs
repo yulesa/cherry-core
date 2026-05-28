@@ -100,7 +100,7 @@ fn extract_data<const N: usize>(ob: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyRe
 fn hex_to_bytes(hex_string: &str) -> Result<Vec<u8>> {
     let hex_string = hex_string.strip_prefix("0x").unwrap_or(hex_string);
     let hex_string = if hex_string.len() % 2 == 1 {
-        format!("0{hex_string}",)
+        format!("0{hex_string}")
     } else {
         hex_string.to_string()
     };

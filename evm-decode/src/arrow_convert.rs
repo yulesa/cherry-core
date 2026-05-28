@@ -21,19 +21,38 @@ use arrow::{
 /// Handles nested types recursively: tuples become Struct, arrays become List.
 /// Integer types are mapped to the smallest Arrow type that fits the bit width,
 /// with types >64 bits using Decimal128/Decimal256.
-pub(crate) fn to_arrow_dtype(sol_type: &DynSolType) -> Result<DataType> {
+///
+/// When `large_int_as_binary` is `true`, signed and unsigned integers wider than
+/// 64 bits (i.e. `int128`/`int256`/`uint128`/`uint256`) are mapped to
+/// `DataType::Binary` (32-byte big-endian, two's-complement for signed) instead
+/// of `Decimal128`/`Decimal256`.
+pub(crate) fn to_arrow_dtype(sol_type: &DynSolType, large_int_as_binary: bool) -> Result<DataType> {
     match sol_type {
         DynSolType::Bool => Ok(DataType::Boolean),
         DynSolType::Bytes | DynSolType::Address | DynSolType::FixedBytes(_) => Ok(DataType::Binary),
         DynSolType::String => Ok(DataType::Utf8),
-        DynSolType::Int(num_bits) => Ok(num_bits_to_int_type(*num_bits)),
-        DynSolType::Uint(num_bits) => Ok(num_bits_to_uint_type(*num_bits)),
+        DynSolType::Int(num_bits) => {
+            if large_int_as_binary && *num_bits > 64 {
+                Ok(DataType::Binary)
+            } else {
+                Ok(num_bits_to_int_type(*num_bits))
+            }
+        }
+        DynSolType::Uint(num_bits) => {
+            if large_int_as_binary && *num_bits > 64 {
+                Ok(DataType::Binary)
+            } else {
+                Ok(num_bits_to_uint_type(*num_bits))
+            }
+        }
         DynSolType::Array(inner_type) => {
-            let inner_type = to_arrow_dtype(inner_type).context("map inner")?;
+            let inner_type =
+                to_arrow_dtype(inner_type, large_int_as_binary).context("map inner")?;
             Ok(DataType::List(Arc::new(Field::new("", inner_type, true))))
         }
         DynSolType::FixedArray(inner_type, n) => {
-            let inner_type = to_arrow_dtype(inner_type).context("map inner")?;
+            let inner_type =
+                to_arrow_dtype(inner_type, large_int_as_binary).context("map inner")?;
             Ok(DataType::FixedSizeList(
                 Arc::new(Field::new("", inner_type, true)),
                 i32::try_from(*n).context("fixed array size exceeds i32")?,
@@ -46,7 +65,7 @@ pub(crate) fn to_arrow_dtype(sol_type: &DynSolType) -> Result<DataType> {
             let mut arrow_fields = Vec::<Arc<Field>>::with_capacity(fields.len());
 
             for (i, f) in fields.iter().enumerate() {
-                let inner_dt = to_arrow_dtype(f).context("map field dt")?;
+                let inner_dt = to_arrow_dtype(f, large_int_as_binary).context("map field dt")?;
                 arrow_fields.push(Arc::new(Field::new(format!("param{i}"), inner_dt, true)));
             }
 
@@ -61,13 +80,17 @@ pub(crate) fn to_arrow_dtype(sol_type: &DynSolType) -> Result<DataType> {
 /// For arrays of tuples (`tuple[]`, `tuple[N]`) the component names are not
 /// preserved in the inner type — they fall through to [`to_arrow_dtype`] so the
 /// schema and the data arrays produced by [`decode_body_named`] remain consistent.
-pub(crate) fn param_to_arrow_dtype(ty: &str, components: &[Param]) -> Result<DataType> {
+pub(crate) fn param_to_arrow_dtype(
+    ty: &str,
+    components: &[Param],
+    large_int_as_binary: bool,
+) -> Result<DataType> {
     if ty == "tuple" && !components.is_empty() {
         let fields = components
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let inner = param_to_arrow_dtype(&c.ty, &c.components)?;
+                let inner = param_to_arrow_dtype(&c.ty, &c.components, large_int_as_binary)?;
                 let name = if c.name.is_empty() {
                     format!("param{i}")
                 } else {
@@ -87,10 +110,10 @@ pub(crate) fn param_to_arrow_dtype(ty: &str, components: &[Param]) -> Result<Dat
             internal_type: None,
         };
         let sol_type = p.resolve().map_err(|e| anyhow!("{e}"))?;
-        to_arrow_dtype(&sol_type)
+        to_arrow_dtype(&sol_type, large_int_as_binary)
     } else {
         let sol_type = DynSolType::parse(ty).map_err(|e| anyhow!("{e}"))?;
-        to_arrow_dtype(&sol_type)
+        to_arrow_dtype(&sol_type, large_int_as_binary)
     }
 }
 
@@ -140,6 +163,7 @@ pub(crate) fn to_arrow(
     sol_type: &DynSolType,
     sol_values: Vec<Option<DynSolValue>>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<Arc<dyn Array>> {
     match sol_type {
         DynSolType::Bool => to_bool(&sol_values),
@@ -147,16 +171,39 @@ pub(crate) fn to_arrow(
             to_binary(&sol_values)
         }
         DynSolType::String => to_string(&sol_values),
-        DynSolType::Int(num_bits) => to_int(*num_bits, &sol_values, allow_decode_fail),
-        DynSolType::Uint(num_bits) => to_uint(*num_bits, &sol_values, allow_decode_fail),
-        DynSolType::Array(inner_type) => to_list(inner_type, sol_values, allow_decode_fail),
-        DynSolType::FixedArray(inner_type, n) => {
-            to_fixed_list(inner_type, *n, sol_values, allow_decode_fail)
+        DynSolType::Int(num_bits) => {
+            if large_int_as_binary && *num_bits > 64 {
+                to_binary_from_int_word(*num_bits, &sol_values)
+            } else {
+                to_int(*num_bits, &sol_values, allow_decode_fail)
+            }
         }
+        DynSolType::Uint(num_bits) => {
+            if large_int_as_binary && *num_bits > 64 {
+                to_binary_from_int_word(*num_bits, &sol_values)
+            } else {
+                to_uint(*num_bits, &sol_values, allow_decode_fail)
+            }
+        }
+        DynSolType::Array(inner_type) => to_list(
+            inner_type,
+            sol_values,
+            allow_decode_fail,
+            large_int_as_binary,
+        ),
+        DynSolType::FixedArray(inner_type, n) => to_fixed_list(
+            inner_type,
+            *n,
+            sol_values,
+            allow_decode_fail,
+            large_int_as_binary,
+        ),
         DynSolType::Function => Err(anyhow!(
             "decoding 'Function' typed value in function signature isn't supported."
         )),
-        DynSolType::Tuple(fields) => to_struct(fields, sol_values, allow_decode_fail),
+        DynSolType::Tuple(fields) => {
+            to_struct(fields, sol_values, allow_decode_fail, large_int_as_binary)
+        }
     }
 }
 
@@ -170,8 +217,8 @@ fn to_int(
         DataType::Int16 => to_int_impl::<Int16Type>(num_bits, sol_values, allow_decode_fail),
         DataType::Int32 => to_int_impl::<Int32Type>(num_bits, sol_values, allow_decode_fail),
         DataType::Int64 => to_int_impl::<Int64Type>(num_bits, sol_values, allow_decode_fail),
-        DataType::Decimal128(_, _) => to_decimal128(num_bits, sol_values, allow_decode_fail),
-        DataType::Decimal256(_, _) => to_decimal256(num_bits, sol_values, allow_decode_fail),
+        DataType::Decimal128(_, _) => to_decimal128(num_bits, sol_values),
+        DataType::Decimal256(_, _) => to_decimal256(num_bits, sol_values),
         dt => Err(anyhow!("unexpected int data type: {dt:?}")),
     }
 }
@@ -186,60 +233,90 @@ fn to_uint(
         DataType::UInt16 => to_int_impl::<UInt16Type>(num_bits, sol_values, allow_decode_fail),
         DataType::UInt32 => to_int_impl::<UInt32Type>(num_bits, sol_values, allow_decode_fail),
         DataType::UInt64 => to_int_impl::<UInt64Type>(num_bits, sol_values, allow_decode_fail),
-        DataType::Decimal128(_, _) => to_decimal128(num_bits, sol_values, allow_decode_fail),
-        DataType::Decimal256(_, _) => to_decimal256(num_bits, sol_values, allow_decode_fail),
+        DataType::Decimal128(_, _) => to_decimal128(num_bits, sol_values),
+        DataType::Decimal256(_, _) => to_decimal256(num_bits, sol_values),
         dt => Err(anyhow!("unexpected uint data type: {dt:?}")),
     }
 }
 
-fn to_decimal128(
+/// Writes wide signed/unsigned integers (>64 bits) as 32-byte big-endian Binary,
+/// matching the on-wire ABI word layout. Two's-complement is preserved for signed
+/// values, so the high 16 bytes of a negative `int128` are `0xFF` (sign extension).
+/// Used when `large_int_as_binary` is enabled to keep `int128`/`int256`/
+/// `uint128`/`uint256` values losslessly accessible without going through Arrow's
+/// signed `Decimal128`/`Decimal256`.
+fn to_binary_from_int_word(
     num_bits: usize,
     sol_values: &[Option<DynSolValue>],
-    allow_decode_fail: bool,
 ) -> Result<Arc<dyn Array>> {
+    let mut builder = builder::BinaryBuilder::new();
+
+    for val in sol_values {
+        match val {
+            Some(DynSolValue::Int(v, nb)) => {
+                if num_bits != *nb {
+                    return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
+                }
+                builder.append_value(v.to_be_bytes::<32>());
+            }
+            Some(DynSolValue::Uint(v, nb)) => {
+                if num_bits != *nb {
+                    return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
+                }
+                builder.append_value(v.to_be_bytes::<32>());
+            }
+            Some(other) => {
+                return Err(anyhow!(
+                    "found unexpected value. Expected: int/uint, Found: {other:?}"
+                ));
+            }
+            None => {
+                builder.append_null();
+            }
+        }
+    }
+
+    Ok(Arc::new(builder.finish()))
+}
+
+/// Converts `int128`/`uint128` values into Arrow `Decimal128(38, 0)`.
+///
+/// Reinterprets the 32-byte big-endian word as `i128` by taking the low 16 bytes.
+/// For `int128` two's-complement, the high 16 bytes carry sign extension (`0x00`
+/// for positive, `0xFF` for negative) and the low 16 bytes are exactly the
+/// `i128` bit pattern. For `uint128`, the high 16 bytes are always zero.
+///
+/// `uint128` values in `[2^127, 2^128 - 1]` will appear negative when read as
+/// signed `Decimal128`; the bit pattern is preserved, callers must reinterpret
+/// if they need unsigned semantics (or use `large_int_as_binary`).
+fn to_decimal128(num_bits: usize, sol_values: &[Option<DynSolValue>]) -> Result<Arc<dyn Array>> {
     let mut builder = builder::Decimal128Builder::new();
 
     for val in sol_values {
         match val {
-            Some(val) => match val {
-                DynSolValue::Int(v, nb) => {
-                    if num_bits != *nb {
-                        return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
-                    }
-
-                    match i128::try_from(*v) {
-                        Ok(v) => builder.append_value(v),
-                        Err(e) if allow_decode_fail => {
-                            log::debug!("failed to convert int value to i128: {e}");
-                            builder.append_null();
-                        }
-                        Err(e) => {
-                            return Err(anyhow!("convert to i128: {e}"));
-                        }
-                    }
+            Some(DynSolValue::Int(v, nb)) => {
+                if num_bits != *nb {
+                    return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
                 }
-                DynSolValue::Uint(v, nb) => {
-                    if num_bits != *nb {
-                        return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
-                    }
-
-                    match i128::try_from(*v) {
-                        Ok(v) => builder.append_value(v),
-                        Err(e) if allow_decode_fail => {
-                            log::debug!("failed to convert uint value to i128: {e}");
-                            builder.append_null();
-                        }
-                        Err(e) => {
-                            return Err(anyhow!("convert to i128: {e}"));
-                        }
-                    }
+                let bytes = v.to_be_bytes::<32>();
+                let mut lo = [0u8; 16];
+                lo.copy_from_slice(&bytes[16..]);
+                builder.append_value(i128::from_be_bytes(lo));
+            }
+            Some(DynSolValue::Uint(v, nb)) => {
+                if num_bits != *nb {
+                    return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
                 }
-                _ => {
-                    return Err(anyhow!(
-                        "found unexpected value. Expected: int/uint, Found: {val:?}"
-                    ));
-                }
-            },
+                let bytes = v.to_be_bytes::<32>();
+                let mut lo = [0u8; 16];
+                lo.copy_from_slice(&bytes[16..]);
+                builder.append_value(i128::from_be_bytes(lo));
+            }
+            Some(other) => {
+                return Err(anyhow!(
+                    "found unexpected value. Expected: int/uint, Found: {other:?}"
+                ));
+            }
             None => {
                 builder.append_null();
             }
@@ -251,49 +328,37 @@ fn to_decimal128(
     Ok(Arc::new(builder.finish()))
 }
 
-fn to_decimal256(
-    num_bits: usize,
-    sol_values: &[Option<DynSolValue>],
-    allow_decode_fail: bool,
-) -> Result<Arc<dyn Array>> {
+/// Converts `int256`/`uint256` values into Arrow `Decimal256(76, 0)`.
+///
+/// Reinterprets the 32-byte big-endian word as `i256` bit-for-bit.
+///
+/// `uint256` values in `[2^255, 2^256 - 1]` will appear negative when read as
+/// signed `Decimal256`; the bit pattern is preserved, callers must reinterpret
+/// if they need unsigned semantics (or use `large_int_as_binary`).
+fn to_decimal256(num_bits: usize, sol_values: &[Option<DynSolValue>]) -> Result<Arc<dyn Array>> {
     let mut builder = builder::Decimal256Builder::new();
 
     for val in sol_values {
         match val {
-            Some(val) => match val {
-                DynSolValue::Int(v, nb) => {
-                    if num_bits != *nb {
-                        return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
-                    }
-
-                    let v = arrow::datatypes::i256::from_be_bytes(v.to_be_bytes::<32>());
-
-                    builder.append_value(v);
+            Some(DynSolValue::Int(v, nb)) => {
+                if num_bits != *nb {
+                    return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
                 }
-                DynSolValue::Uint(v, nb) => {
-                    if num_bits != *nb {
-                        return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
-                    }
-                    match I256::try_from(*v).context("try u256 to i256") {
-                        Ok(v) => builder.append_value(arrow::datatypes::i256::from_be_bytes(
-                            v.to_be_bytes::<32>(),
-                        )),
-                        Err(e) => {
-                            if allow_decode_fail {
-                                log::debug!("failed to decode u256: {e}");
-                                builder.append_null();
-                            } else {
-                                return Err(e);
-                            }
-                        }
-                    }
+                let v = arrow::datatypes::i256::from_be_bytes(v.to_be_bytes::<32>());
+                builder.append_value(v);
+            }
+            Some(DynSolValue::Uint(v, nb)) => {
+                if num_bits != *nb {
+                    return Err(anyhow!("bit width mismatch: expected {num_bits}, got {nb}"));
                 }
-                _ => {
-                    return Err(anyhow!(
-                        "found unexpected value. Expected: bool, Found: {val:?}"
-                    ));
-                }
-            },
+                let v = arrow::datatypes::i256::from_be_bytes(v.to_be_bytes::<32>());
+                builder.append_value(v);
+            }
+            Some(other) => {
+                return Err(anyhow!(
+                    "found unexpected value. Expected: int/uint, Found: {other:?}"
+                ));
+            }
             None => {
                 builder.append_null();
             }
@@ -368,6 +433,7 @@ fn to_list(
     sol_type: &DynSolType,
     sol_values: Vec<Option<DynSolValue>>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<Arc<dyn Array>> {
     let mut lengths = Vec::with_capacity(sol_values.len());
     let mut values = Vec::with_capacity(sol_values.len() * 2);
@@ -396,10 +462,11 @@ fn to_list(
         }
     }
 
-    let values = to_arrow(sol_type, values, allow_decode_fail).context("map inner")?;
+    let values =
+        to_arrow(sol_type, values, allow_decode_fail, large_int_as_binary).context("map inner")?;
     let field = Field::new(
         "",
-        to_arrow_dtype(sol_type).context("construct data type")?,
+        to_arrow_dtype(sol_type, large_int_as_binary).context("construct data type")?,
         true,
     );
     let list_arr = ListArray::try_new(
@@ -421,6 +488,7 @@ fn to_fixed_list(
     n: usize,
     sol_values: Vec<Option<DynSolValue>>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<Arc<dyn Array>> {
     let mut values = Vec::with_capacity(sol_values.len() * n);
     let mut validity = Vec::with_capacity(sol_values.len());
@@ -453,10 +521,11 @@ fn to_fixed_list(
         }
     }
 
-    let inner_values = to_arrow(sol_type, values, allow_decode_fail).context("map inner")?;
+    let inner_values =
+        to_arrow(sol_type, values, allow_decode_fail, large_int_as_binary).context("map inner")?;
     let field = Arc::new(Field::new(
         "",
-        to_arrow_dtype(sol_type).context("construct data type")?,
+        to_arrow_dtype(sol_type, large_int_as_binary).context("construct data type")?,
         true,
     ));
     let null_buf = if all_valid {
@@ -479,6 +548,7 @@ fn to_struct(
     fields: &[DynSolType],
     sol_values: Vec<Option<DynSolValue>>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<Arc<dyn Array>> {
     // Handle empty tuple (e.g. events where all params are indexed and body is empty)
     if fields.is_empty() {
@@ -521,8 +591,13 @@ fn to_struct(
 
     let mut arrays = Vec::with_capacity(fields.len());
 
-    for (sol_type, arr_vals) in fields.iter().zip(values.into_iter()) {
-        arrays.push(to_arrow(sol_type, arr_vals, allow_decode_fail)?);
+    for (sol_type, arr_vals) in fields.iter().zip(values) {
+        arrays.push(to_arrow(
+            sol_type,
+            arr_vals,
+            allow_decode_fail,
+            large_int_as_binary,
+        )?);
     }
 
     let fields = arrays
@@ -629,6 +704,7 @@ pub(crate) fn to_struct_named(
     named: &[(&str, &[Param])],
     sol_values: Vec<Option<DynSolValue>>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
 ) -> Result<Arc<dyn Array>> {
     if fields.is_empty() {
         return Ok(Arc::new(StructArray::new_empty_fields(
@@ -676,9 +752,15 @@ pub(crate) fn to_struct_named(
                     .iter()
                     .map(|c| (c.name.as_str(), c.components.as_slice()))
                     .collect();
-                to_struct_named(sub_fields, &sub_named, field_vals, allow_decode_fail)?
+                to_struct_named(
+                    sub_fields,
+                    &sub_named,
+                    field_vals,
+                    allow_decode_fail,
+                    large_int_as_binary,
+                )?
             }
-            _ => to_arrow(sol_type, field_vals, allow_decode_fail)?,
+            _ => to_arrow(sol_type, field_vals, allow_decode_fail, large_int_as_binary)?,
         };
         arrays.push(arr);
     }
@@ -707,6 +789,7 @@ pub(crate) fn decode_topic<I: OffsetSizeTrait>(
     sol_type: &DynSolType,
     col: &GenericBinaryArray<I>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
     arrays: &mut Vec<Arc<dyn Array>>,
 ) -> Result<()> {
     let mut decoded = Vec::<Option<DynSolValue>>::with_capacity(col.len());
@@ -727,7 +810,10 @@ pub(crate) fn decode_topic<I: OffsetSizeTrait>(
         }
     }
 
-    arrays.push(to_arrow(sol_type, decoded, allow_decode_fail).context("map topic to arrow")?);
+    arrays.push(
+        to_arrow(sol_type, decoded, allow_decode_fail, large_int_as_binary)
+            .context("map topic to arrow")?,
+    );
 
     Ok(())
 }
@@ -739,6 +825,7 @@ pub(crate) fn decode_body_named<I: OffsetSizeTrait>(
     body_params: &[&EventParam],
     body_col: &GenericBinaryArray<I>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
     arrays: &mut Vec<Arc<dyn Array>>,
 ) -> Result<()> {
     let mut body_decoded = Vec::<Option<DynSolValue>>::with_capacity(body_col.len());
@@ -767,8 +854,14 @@ pub(crate) fn decode_body_named<I: OffsetSizeTrait>(
         _ => return Err(anyhow!("body_sol_type must be DynSolType::Tuple")),
     };
 
-    let body_array = to_struct_named(body_sol_types, &named, body_decoded, allow_decode_fail)
-        .context("build body struct")?;
+    let body_array = to_struct_named(
+        body_sol_types,
+        &named,
+        body_decoded,
+        allow_decode_fail,
+        large_int_as_binary,
+    )
+    .context("build body struct")?;
 
     let arr = body_array
         .as_any()

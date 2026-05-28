@@ -16,9 +16,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use arrow::{
     array::{
-        builder, make_array, Array, BinaryArray, Decimal256Array, FixedSizeListArray,
-        GenericBinaryArray, GenericStringArray, Int32Array, LargeBinaryArray, OffsetSizeTrait,
-        RecordBatch, StructArray,
+        builder, make_array, Array, BinaryArray, Decimal128Array, Decimal256Array,
+        FixedSizeListArray, GenericBinaryArray, GenericStringArray, Int32Array, LargeBinaryArray,
+        OffsetSizeTrait, RecordBatch, StructArray,
     },
     buffer::NullBuffer,
     compute::CastOptions,
@@ -482,6 +482,95 @@ pub fn u256_to_binary(data: &RecordBatch) -> Result<RecordBatch> {
     }
 
     RecordBatch::try_new(Arc::new(schema), columns).context("construct arrow batch")
+}
+
+/// Encodes a `Decimal256` column as fixed 32-byte big-endian two's-complement binary.
+///
+/// Matches the wire format produced by `evm-decode`'s `large_int_as_binary` for
+/// `int256` and `uint256`. Unlike [`u256_column_to_binary`], this preserves the
+/// bit pattern of negative values (no `i256 → U256` conversion), so it works
+/// for both signed and unsigned 256-bit integers.
+pub fn decimal256_to_be32(col: &Decimal256Array) -> BinaryArray {
+    let mut arr = builder::BinaryBuilder::with_capacity(col.len(), col.len() * 32);
+
+    for v in col {
+        match v {
+            Some(v) => arr.append_value(v.to_be_bytes()),
+            None => arr.append_null(),
+        }
+    }
+
+    arr.finish()
+}
+
+/// Encodes a `Decimal128` column as fixed 16-byte big-endian two's-complement binary.
+///
+/// Matches the wire format produced by `evm-decode`'s `large_int_as_binary` for
+/// `int128` and `uint128`. Works for both signed and unsigned 128-bit integers
+/// (the byte pattern is identical).
+pub fn decimal128_to_be16(col: &Decimal128Array) -> BinaryArray {
+    let mut arr = builder::BinaryBuilder::with_capacity(col.len(), col.len() * 16);
+
+    for v in col {
+        match v {
+            Some(v) => arr.append_value(v.to_be_bytes()),
+            None => arr.append_null(),
+        }
+    }
+
+    arr.finish()
+}
+
+/// Converts large-integer Decimal columns (`Decimal256(_, 0)` and
+/// `Decimal128(_, 0)`) to fixed-width big-endian two's-complement binary
+/// (32 bytes and 16 bytes respectively). Other columns pass through unchanged.
+///
+/// Produces the same byte representation as `evm-decode`'s `large_int_as_binary`
+/// mode, so a Decimal-shaped batch and a binary-shaped batch can be compared
+/// after applying this cast.
+#[expect(
+    clippy::unwrap_used,
+    reason = "downcast is guaranteed by prior data type check"
+)]
+pub fn large_ints_to_binary(data: &RecordBatch) -> Result<RecordBatch> {
+    let schema = schema_large_int_to_binary(data.schema_ref());
+    let mut columns = Vec::<Arc<dyn Array>>::with_capacity(data.columns().len());
+
+    for col in data.columns() {
+        let new: Arc<dyn Array> = match col.data_type() {
+            DataType::Decimal256(_, 0) => Arc::new(decimal256_to_be32(
+                col.as_any().downcast_ref::<Decimal256Array>().unwrap(),
+            )),
+            DataType::Decimal128(_, 0) => Arc::new(decimal128_to_be16(
+                col.as_any().downcast_ref::<Decimal128Array>().unwrap(),
+            )),
+            _ => col.clone(),
+        };
+        columns.push(new);
+    }
+
+    RecordBatch::try_new(Arc::new(schema), columns).context("construct arrow batch")
+}
+
+/// Schema-only mirror of [`large_ints_to_binary`]: rewrites scale-0 `Decimal256`
+/// and `Decimal128` fields to `Binary`. Other fields pass through unchanged.
+pub fn schema_large_int_to_binary(schema: &Schema) -> Schema {
+    let mut fields = Vec::<Arc<Field>>::with_capacity(schema.fields().len());
+
+    for f in schema.fields() {
+        match f.data_type() {
+            DataType::Decimal256(_, 0) | DataType::Decimal128(_, 0) => {
+                fields.push(Arc::new(Field::new(
+                    f.name().clone(),
+                    DataType::Binary,
+                    f.is_nullable(),
+                )));
+            }
+            _ => fields.push(f.clone()),
+        }
+    }
+
+    Schema::new(fields)
 }
 
 /// Flattens all `Struct` columns in a RecordBatch into top-level columns,

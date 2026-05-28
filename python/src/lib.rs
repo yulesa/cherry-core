@@ -60,6 +60,7 @@ fn tiders_core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(u256_column_from_binary, m)?)?;
     m.add_function(wrap_pyfunction!(u256_column_to_binary, m)?)?;
     m.add_function(wrap_pyfunction!(u256_to_binary, m)?)?;
+    m.add_function(wrap_pyfunction!(large_ints_to_binary, m)?)?;
     m.add_function(wrap_pyfunction!(svm_decode_instructions, m)?)?;
     m.add_function(wrap_pyfunction!(svm_decode_logs, m)?)?;
     m.add_function(wrap_pyfunction!(instruction_signature_to_arrow_schema, m)?)?;
@@ -204,6 +205,16 @@ fn u256_to_binary(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject
     let batch = RecordBatch::from_pyarrow_bound(batch).context("convert batch from pyarrow")?;
 
     let batch = baselib::cast::u256_to_binary(&batch).context("map u256 columns to binary")?;
+
+    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
+}
+
+#[pyfunction]
+fn large_ints_to_binary(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+    let batch = RecordBatch::from_pyarrow_bound(batch).context("convert batch from pyarrow")?;
+
+    let batch =
+        baselib::cast::large_ints_to_binary(&batch).context("map large int columns to binary")?;
 
     Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
 }
@@ -452,10 +463,12 @@ fn instruction_signature_to_arrow_schema(
 }
 
 #[pyfunction]
+#[pyo3(signature = (signature, col, allow_decode_fail=false, large_int_as_binary=false))]
 fn evm_decode_call_inputs(
     signature: &str,
     col: &Bound<'_, PyAny>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
     py: Python<'_>,
 ) -> PyResult<PyObject> {
     let mut col = ArrayData::from_pyarrow_bound(col).context("convert column from pyarrow")?;
@@ -469,17 +482,24 @@ fn evm_decode_call_inputs(
     }
     let col = BinaryArray::from(col);
 
-    let batch = baselib::evm_decode::decode_call_inputs(signature, &col, allow_decode_fail)
-        .context("decode cal inputs")?;
+    let batch = baselib::evm_decode::decode_call_inputs(
+        signature,
+        &col,
+        allow_decode_fail,
+        large_int_as_binary,
+    )
+    .context("decode cal inputs")?;
 
     Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
 }
 
 #[pyfunction]
+#[pyo3(signature = (signature, col, allow_decode_fail=false, large_int_as_binary=false))]
 fn evm_decode_call_outputs(
     signature: &str,
     col: &Bound<'_, PyAny>,
     allow_decode_fail: bool,
+    large_int_as_binary: bool,
     py: Python<'_>,
 ) -> PyResult<PyObject> {
     let mut col = ArrayData::from_pyarrow_bound(col).context("convert column from pyarrow")?;
@@ -493,20 +513,27 @@ fn evm_decode_call_outputs(
     }
     let col = BinaryArray::from(col);
 
-    let batch = baselib::evm_decode::decode_call_outputs(signature, &col, allow_decode_fail)
-        .context("decode cal outputs")?;
+    let batch = baselib::evm_decode::decode_call_outputs(
+        signature,
+        &col,
+        allow_decode_fail,
+        large_int_as_binary,
+    )
+    .context("decode cal outputs")?;
 
     Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?)
 }
 
 #[pyfunction]
-#[pyo3(signature = (signature, batch, allow_decode_fail=false, filter_by_topic0=false, hstack=false))]
+#[pyo3(signature = (signature, batch, allow_decode_fail=false, filter_by_topic0=false, hstack=false, large_int_as_binary=false))]
+#[expect(clippy::fn_params_excessive_bools, reason = "stable Python API")]
 fn evm_decode_events(
     signature: &str,
     batch: &Bound<'_, PyAny>,
     allow_decode_fail: bool,
     filter_by_topic0: bool,
     hstack: bool,
+    large_int_as_binary: bool,
     py: Python<'_>,
 ) -> PyResult<PyObject> {
     let batch = RecordBatch::from_pyarrow_bound(batch).context("convert batch from pyarrow")?;
@@ -517,6 +544,7 @@ fn evm_decode_events(
         allow_decode_fail,
         filter_by_topic0,
         hstack,
+        large_int_as_binary,
     )
     .context("decode events")?;
 
@@ -524,9 +552,15 @@ fn evm_decode_events(
 }
 
 #[pyfunction]
-fn evm_event_signature_to_arrow_schema(signature: &str, py: Python<'_>) -> PyResult<PyObject> {
-    let schema = baselib::evm_decode::event_signature_to_arrow_schema(signature)
-        .context("signature to schema")?;
+#[pyo3(signature = (signature, large_int_as_binary=false))]
+fn evm_event_signature_to_arrow_schema(
+    signature: &str,
+    large_int_as_binary: bool,
+    py: Python<'_>,
+) -> PyResult<PyObject> {
+    let schema =
+        baselib::evm_decode::event_signature_to_arrow_schema(signature, large_int_as_binary)
+            .context("signature to schema")?;
 
     Ok(schema
         .to_pyarrow(py)
@@ -534,12 +568,14 @@ fn evm_event_signature_to_arrow_schema(signature: &str, py: Python<'_>) -> PyRes
 }
 
 #[pyfunction]
+#[pyo3(signature = (signature, large_int_as_binary=false))]
 fn evm_function_signature_to_arrow_schemas(
     signature: &str,
+    large_int_as_binary: bool,
     py: Python<'_>,
 ) -> PyResult<(PyObject, PyObject)> {
     let (input_schema, output_schema) =
-        baselib::evm_decode::function_signature_to_arrow_schemas(signature)
+        baselib::evm_decode::function_signature_to_arrow_schemas(signature, large_int_as_binary)
             .context("signature to schemas")?;
 
     let input_schema = input_schema

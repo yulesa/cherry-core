@@ -1012,7 +1012,7 @@ mod tests {
             ],
         };
 
-        let result = decode_instructions_batch(&ix_signature, &instructions, true)
+        let result = decode_instructions_batch(&ix_signature, &instructions, true, false, false)
             .context("decode failed")
             .unwrap();
 
@@ -1083,7 +1083,7 @@ mod tests {
             ],
         };
 
-        let result = decode_logs_batch(&signature, &logs, true)
+        let result = decode_logs_batch(&signature, &logs, true, false)
             .context("decode failed")
             .unwrap();
 

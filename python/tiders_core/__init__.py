@@ -251,6 +251,26 @@ def u256_to_binary(data: pyarrow.RecordBatch) -> pyarrow.RecordBatch:
     return cc.u256_to_binary(data)
 
 
+def large_ints_to_binary(data: pyarrow.RecordBatch) -> pyarrow.RecordBatch:
+    """Convert large-integer Decimal columns to fixed-width big-endian binary.
+
+    Rewrites scale-0 ``Decimal256`` columns to 32-byte ``Binary`` and scale-0
+    ``Decimal128`` columns to 16-byte ``Binary`` using two's-complement
+    encoding. Other columns pass through unchanged.
+
+    Produces the same byte representation as ``evm_decode_events`` (and
+    related decoders) with ``large_int_as_binary=True``, so a Decimal-shaped
+    batch and a binary-shaped batch can be compared after applying this cast.
+
+    Args:
+        data: A RecordBatch that may contain Decimal128 / Decimal256 columns.
+
+    Returns:
+        A new RecordBatch with matching Decimal columns replaced by Binary.
+    """
+    return cc.large_ints_to_binary(data)
+
+
 def svm_decode_instructions(
     signature: svm_decode.InstructionSignature,
     batch: pyarrow.RecordBatch,
@@ -329,7 +349,10 @@ def instruction_signature_to_arrow_schema(
 
 
 def evm_decode_call_inputs(
-    signature: str, data: pyarrow.Array, allow_decode_fail: bool = False
+    signature: str,
+    data: pyarrow.Array,
+    allow_decode_fail: bool = False,
+    large_int_as_binary: bool = False,
 ) -> pyarrow.RecordBatch:
     """Decode EVM function call input data using an ABI function signature.
 
@@ -339,15 +362,25 @@ def evm_decode_call_inputs(
             4-byte selector).
         allow_decode_fail: If True, rows that fail to decode are filled with nulls
             instead of raising an error.
+        large_int_as_binary: If True, signed and unsigned integers wider than 64 bits
+            (``int128``/``int256``/``uint128``/``uint256``) are emitted as 32-byte
+            big-endian ``Binary`` columns (two's-complement for signed) instead of
+            ``Decimal128``/``Decimal256``. Use this to preserve the full unsigned
+            range of ``uint256`` losslessly.
 
     Returns:
         A RecordBatch with one column per function input parameter.
     """
-    return cc.evm_decode_call_inputs(signature, data, allow_decode_fail)
+    return cc.evm_decode_call_inputs(
+        signature, data, allow_decode_fail, large_int_as_binary
+    )
 
 
 def evm_decode_call_outputs(
-    signature: str, data: pyarrow.Array, allow_decode_fail: bool = False
+    signature: str,
+    data: pyarrow.Array,
+    allow_decode_fail: bool = False,
+    large_int_as_binary: bool = False,
 ) -> pyarrow.RecordBatch:
     """Decode EVM function call output (return) data using an ABI function signature.
 
@@ -356,11 +389,16 @@ def evm_decode_call_outputs(
         data: A Binary array containing ABI-encoded return data.
         allow_decode_fail: If True, rows that fail to decode are filled with nulls
             instead of raising an error.
+        large_int_as_binary: If True, signed and unsigned integers wider than 64 bits
+            are emitted as 32-byte big-endian ``Binary`` columns instead of
+            ``Decimal128``/``Decimal256``. See ``evm_decode_call_inputs`` for details.
 
     Returns:
         A RecordBatch with one column per function output parameter.
     """
-    return cc.evm_decode_call_outputs(signature, data, allow_decode_fail)
+    return cc.evm_decode_call_outputs(
+        signature, data, allow_decode_fail, large_int_as_binary
+    )
 
 
 def evm_decode_events(
@@ -369,6 +407,7 @@ def evm_decode_events(
     allow_decode_fail: bool = False,
     filter_by_topic0: bool = False,
     hstack: bool = False,
+    large_int_as_binary: bool = False,
 ) -> pyarrow.RecordBatch:
     """Decode EVM event log data using an ABI event signature.
 
@@ -382,42 +421,61 @@ def evm_decode_events(
             selector are decoded. Non-matching rows are silently filtered out.
         hstack: If True, the original input columns (after any topic0 filtering)
             are appended alongside the decoded columns in the output.
+        large_int_as_binary: If True, signed and unsigned integers wider than 64 bits
+            (``int128``/``int256``/``uint128``/``uint256``) are emitted as 32-byte
+            big-endian ``Binary`` columns (two's-complement for signed) instead of
+            ``Decimal128``/``Decimal256``. Use this to preserve the full unsigned
+            range of ``uint256`` losslessly (e.g. keccak-derived token IDs).
+            ``evm_event_signature_to_arrow_schema`` must be called with the same
+            flag value to produce a matching schema.
 
     Returns:
         A RecordBatch with one column per event parameter (both indexed and non-indexed).
         When ``hstack`` is True, original input columns are also included.
     """
     return cc.evm_decode_events(
-        signature, data, allow_decode_fail, filter_by_topic0, hstack
+        signature,
+        data,
+        allow_decode_fail,
+        filter_by_topic0,
+        hstack,
+        large_int_as_binary,
     )
 
 
-def evm_event_signature_to_arrow_schema(signature: str) -> pyarrow.Schema:
+def evm_event_signature_to_arrow_schema(
+    signature: str, large_int_as_binary: bool = False
+) -> pyarrow.Schema:
     """Convert an EVM event signature to an Arrow schema.
 
     Args:
         signature: The Solidity event signature
             (e.g. ``"Transfer(address indexed,address indexed,uint256)"``).
+        large_int_as_binary: Must match the value passed to ``evm_decode_events``
+            for the resulting batch to match this schema.
 
     Returns:
         A PyArrow Schema describing the columns that ``evm_decode_events`` would produce.
     """
-    return cc.evm_event_signature_to_arrow_schema(signature)
+    return cc.evm_event_signature_to_arrow_schema(signature, large_int_as_binary)
 
 
-def evm_transaction_signature_to_arrow_schemas(
-    signature: str,
+def evm_function_signature_to_arrow_schemas(
+    signature: str, large_int_as_binary: bool = False
 ) -> Tuple[pyarrow.Schema, pyarrow.Schema]:
     """Convert an EVM function signature to Arrow schemas for inputs and outputs.
 
     Args:
         signature: The Solidity function signature (e.g. ``"transfer(address,uint256)"``).
+        large_int_as_binary: Must match the value passed to ``evm_decode_call_inputs``
+            / ``evm_decode_call_outputs`` for the resulting batches to match these
+            schemas.
 
     Returns:
         A tuple of (input_schema, output_schema) where each is a PyArrow Schema
         describing the decoded columns for function inputs and outputs respectively.
     """
-    return cc.evm_transaction_signature_to_arrow_schemas(signature)
+    return cc.evm_function_signature_to_arrow_schemas(signature, large_int_as_binary)
 
 
 def evm_signature_to_topic0(signature: str) -> str:

@@ -440,7 +440,7 @@ def evm_event_signature_to_arrow_schema(
     return cc.evm_event_signature_to_arrow_schema(signature, large_int_as_binary)
 
 
-def evm_transaction_signature_to_arrow_schemas(
+def evm_function_signature_to_arrow_schemas(
     signature: str, large_int_as_binary: bool = False
 ) -> Tuple[pyarrow.Schema, pyarrow.Schema]:
     """Convert an EVM function signature to Arrow schemas for inputs and outputs.
@@ -455,7 +455,7 @@ def evm_transaction_signature_to_arrow_schemas(
         A tuple of (input_schema, output_schema) where each is a PyArrow Schema
         describing the decoded columns for function inputs and outputs respectively.
     """
-    return cc.evm_transaction_signature_to_arrow_schemas(signature, large_int_as_binary)
+    return cc.evm_function_signature_to_arrow_schemas(signature, large_int_as_binary)
 
 
 def evm_signature_to_topic0(signature: str) -> str:

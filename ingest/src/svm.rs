@@ -116,16 +116,18 @@ fn hex_to_bytes(hex_string: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for Address {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_base58(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for Address {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_base58(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for Data {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for Data {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         use pyo3::types::PyAnyMethods;
         use pyo3::types::PyTypeMethods;
 
@@ -146,41 +148,46 @@ impl<'py> pyo3::FromPyObject<'py> for Data {
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for D1 {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_data(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for D1 {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_data(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for D2 {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_data(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for D2 {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_data(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for D3 {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_data(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for D3 {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_data(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for D4 {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_data(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for D4 {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_data(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for D8 {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_data(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for D8 {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_data(&ob)?;
         Ok(Self(out))
     }
 }
@@ -267,10 +274,9 @@ impl LogKind {
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for LogKind {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        use pyo3::types::PyAnyMethods;
-
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for LogKind {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         let s: &str = ob.extract().context("extract string")?;
 
         Ok(Self::from_str(s).context("from str")?)

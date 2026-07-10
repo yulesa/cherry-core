@@ -13,8 +13,8 @@ members = [
 ]
 
 [workspace.dependencies]
-arrow = "56"
-parquet = "56"
+arrow = "59"
+parquet = "59"
 alloy-dyn-abi = "1"
 alloy-json-abi = "1"
 alloy-primitives = "1"
@@ -30,10 +30,10 @@ faster-hex = "0.10"
 futures-lite = "2"
 tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
-pyo3 = "0.25.1"
-sqd-portal-client = "0.2"
+pyo3 = "0.29"
+tiders-sqd-client = "0.1"
 hypersync-client = "0.19"
-tiders-rpc-client = "0.1.1"
+tiders-rpc-client = "0.2"
 serde = "1"
 serde_json = "1"
 polars-arrow = "0.42"
@@ -44,6 +44,15 @@ base64 = "0.22.1"
 rayon = "1"
 hashbrown = "0.16"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# Temporary local overrides while these crates are unpublished.
+# They require manual publishing "cargo publish -p tiders-evm-schema and tiders-svm-schema" to crates.
+# Remove once tiders-sqd-client 0.1.0, tiders-rpc-client 0.2.0, and the 0.2.0 schema crates are on crates.io.
+# [patch.crates-io]
+# tiders-sqd-client = { path = "../sqd-portal-client/rust" }
+# tiders-rpc-client = { path = "../tiders-rpc-client/rust" }
+# tiders-evm-schema = { path = "evm-schema" }
+# tiders-svm-schema = { path = "svm-schema" }
 
 # ============================================
 # Using rust-magic-linter STANDARD PRESET so agents follows rust best practices

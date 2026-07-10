@@ -122,6 +122,7 @@ pub async fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<Pr
         Query::Svm(_) => Err(anyhow!("svm is not supported by hypersync")),
         Query::Evm(query) => {
             let evm_query = query_to_hypersync(&query).context("convert to hypersync query")?;
+            let has_bearer_token = cfg.bearer_token.as_deref().is_some_and(|t| !t.is_empty());
             let client_config = hypersync_client::ClientConfig {
                 url: match cfg.url {
                     Some(url) => Some(url.parse().context("parse url")?),
@@ -144,7 +145,16 @@ pub async fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<Pr
                 hypersync_client::Client::new(client_config).context("init hypersync client")?;
             let client = Arc::new(client);
 
-            let chain_id = client.get_chain_id().await.context("get chain id")?;
+            let chain_id = client.get_chain_id().await.map_err(|e| {
+                if has_bearer_token {
+                    e.context("get chain id")
+                } else {
+                    anyhow!(
+                        "failed to reach the Hypersync provider: {e}. \
+                         Hypersync providers require a token — create one at https://envio.dev/"
+                    )
+                }
+            })?;
             let rollback_offset = make_rollback_offset(chain_id);
 
             let (tx, rx) = mpsc::channel(1);

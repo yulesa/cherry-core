@@ -1,6 +1,6 @@
 [package]
 name = "tiders-svm-decode"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 description = "SVM decoding implementations in Arrow format"
 homepage = "https://github.com/yulesa/tiders-core"

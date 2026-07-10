@@ -43,8 +43,9 @@ pub struct LogSignature {
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for InstructionSignature {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for InstructionSignature {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         use pyo3::types::PyAnyMethods;
         use pyo3::types::PyTypeMethods;
 
@@ -91,8 +92,9 @@ fn hex_to_bytes(hex_string: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for LogSignature {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for LogSignature {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         use pyo3::types::PyAnyMethods;
 
         let params = ob.getattr("params")?.extract::<Vec<ParamInput>>()?;

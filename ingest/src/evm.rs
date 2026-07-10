@@ -46,33 +46,37 @@ fn extract_hex<const N: usize>(ob: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyRes
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for Hash {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_hex(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for Hash {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_hex(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for Address {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_hex(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for Address {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_hex(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for Sighash {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_hex(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for Sighash {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_hex(&ob)?;
         Ok(Self(out))
     }
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for Topic {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        let out = extract_hex(ob)?;
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for Topic {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        let out = extract_hex(&ob)?;
         Ok(Self(out))
     }
 }

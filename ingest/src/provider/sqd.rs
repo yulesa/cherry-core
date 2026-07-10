@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use std::sync::Arc;
 
-fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query> {
+fn svm_query_to_sqd(query: &svm::Query) -> Result<tiders_sqd_client::svm::Query> {
     let base58_encode = |addr: &[u8]| {
         bs58::encode(addr)
             .with_alphabet(bs58::Alphabet::BITCOIN)
@@ -16,13 +16,13 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
     };
     let hex_encode = |addr: &[u8]| format!("0x{}", faster_hex::hex_string(addr));
 
-    Ok(sqd_portal_client::svm::Query {
-        type_: sqd_portal_client::svm::QueryType::default(),
+    Ok(tiders_sqd_client::svm::Query {
+        type_: tiders_sqd_client::svm::QueryType::default(),
         from_block: query.from_block,
         to_block: query.to_block,
         include_all_blocks: query.include_all_blocks,
-        fields: sqd_portal_client::svm::Fields {
-            instruction: sqd_portal_client::svm::InstructionFields {
+        fields: tiders_sqd_client::svm::Fields {
+            instruction: tiders_sqd_client::svm::InstructionFields {
                 transaction_index: query.fields.instruction.transaction_index,
                 instruction_address: query.fields.instruction.instruction_address,
                 program_id: query.fields.instruction.program_id,
@@ -47,7 +47,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
                 is_committed: query.fields.instruction.is_committed,
                 has_dropped_log_messages: query.fields.instruction.has_dropped_log_messages,
             },
-            transaction: sqd_portal_client::svm::TransactionFields {
+            transaction: tiders_sqd_client::svm::TransactionFields {
                 transaction_index: query.fields.transaction.transaction_index,
                 version: query.fields.transaction.version,
                 account_keys: query.fields.transaction.account_keys,
@@ -69,7 +69,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
                 fee_payer: query.fields.transaction.fee_payer,
                 has_dropped_log_messages: query.fields.transaction.has_dropped_log_messages,
             },
-            log: sqd_portal_client::svm::LogFields {
+            log: tiders_sqd_client::svm::LogFields {
                 transaction_index: query.fields.log.transaction_index,
                 log_index: query.fields.log.log_index,
                 instruction_address: query.fields.log.instruction_address,
@@ -77,13 +77,13 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
                 kind: query.fields.log.kind,
                 message: query.fields.log.message,
             },
-            balance: sqd_portal_client::svm::BalanceFields {
+            balance: tiders_sqd_client::svm::BalanceFields {
                 transaction_index: query.fields.balance.transaction_index,
                 account: query.fields.balance.account,
                 pre: query.fields.balance.pre,
                 post: query.fields.balance.post,
             },
-            token_balance: sqd_portal_client::svm::TokenBalanceFields {
+            token_balance: tiders_sqd_client::svm::TokenBalanceFields {
                 transaction_index: query.fields.token_balance.transaction_index,
                 account: query.fields.token_balance.account,
                 pre_mint: query.fields.token_balance.pre_mint,
@@ -97,14 +97,14 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
                 pre_amount: query.fields.token_balance.pre_amount,
                 post_amount: query.fields.token_balance.post_amount,
             },
-            reward: sqd_portal_client::svm::RewardFields {
+            reward: tiders_sqd_client::svm::RewardFields {
                 pubkey: query.fields.reward.pubkey,
                 lamports: query.fields.reward.lamports,
                 post_balance: query.fields.reward.post_balance,
                 reward_type: query.fields.reward.reward_type,
                 commission: query.fields.reward.commission,
             },
-            block: sqd_portal_client::svm::BlockFields {
+            block: tiders_sqd_client::svm::BlockFields {
                 number: query.fields.block.slot
                     || query.fields.instruction.block_slot
                     || query.fields.transaction.block_slot
@@ -172,7 +172,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
                     }
                 }
 
-                Ok(sqd_portal_client::svm::InstructionRequest {
+                Ok(tiders_sqd_client::svm::InstructionRequest {
                     program_id: inst
                         .program_id
                         .iter()
@@ -244,7 +244,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
         transactions: query
             .transactions
             .iter()
-            .map(|tx| sqd_portal_client::svm::TransactionRequest {
+            .map(|tx| tiders_sqd_client::svm::TransactionRequest {
                 fee_payer: tx
                     .fee_payer
                     .iter()
@@ -257,7 +257,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
         logs: query
             .logs
             .iter()
-            .map(|lg| sqd_portal_client::svm::LogRequest {
+            .map(|lg| tiders_sqd_client::svm::LogRequest {
                 kind: lg.kind.iter().map(|v| v.as_str().to_owned()).collect(),
                 program_id: lg
                     .program_id
@@ -271,7 +271,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
         balances: query
             .balances
             .iter()
-            .map(|bl| sqd_portal_client::svm::BalanceRequest {
+            .map(|bl| tiders_sqd_client::svm::BalanceRequest {
                 account: bl
                     .account
                     .iter()
@@ -284,7 +284,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
         token_balances: query
             .token_balances
             .iter()
-            .map(|tb| sqd_portal_client::svm::TokenBalanceRequest {
+            .map(|tb| tiders_sqd_client::svm::TokenBalanceRequest {
                 account: tb
                     .account
                     .iter()
@@ -327,7 +327,7 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
         rewards: query
             .rewards
             .iter()
-            .map(|r| sqd_portal_client::svm::RewardRequest {
+            .map(|r| tiders_sqd_client::svm::RewardRequest {
                 pubkey: r
                     .pubkey
                     .iter()
@@ -338,13 +338,13 @@ fn svm_query_to_sqd(query: &svm::Query) -> Result<sqd_portal_client::svm::Query>
     })
 }
 
-fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
+fn evm_query_to_sqd(query: &evm::Query) -> tiders_sqd_client::evm::Query {
     let hex_encode = |addr: &[u8]| format!("0x{}", faster_hex::hex_string(addr));
 
     let mut logs: Vec<_> = Vec::with_capacity(query.logs.len());
 
     for lg in &query.logs {
-        logs.push(sqd_portal_client::evm::LogRequest {
+        logs.push(tiders_sqd_client::evm::LogRequest {
             address: lg
                 .address
                 .iter()
@@ -376,15 +376,15 @@ fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
         });
     }
 
-    sqd_portal_client::evm::Query {
-        type_: sqd_portal_client::evm::QueryType::default(),
+    tiders_sqd_client::evm::Query {
+        type_: tiders_sqd_client::evm::QueryType::default(),
         from_block: query.from_block,
         to_block: query.to_block,
         include_all_blocks: query.include_all_blocks,
         transactions: query
             .transactions
             .iter()
-            .map(|tx| sqd_portal_client::evm::TransactionRequest {
+            .map(|tx| tiders_sqd_client::evm::TransactionRequest {
                 from: tx
                     .from_
                     .iter()
@@ -405,7 +405,7 @@ fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
         traces: query
             .traces
             .iter()
-            .map(|t| sqd_portal_client::evm::TraceRequest {
+            .map(|t| tiders_sqd_client::evm::TraceRequest {
                 type_: t.type_.clone(),
                 create_from: t.from_.iter().map(|x| hex_encode(x.0.as_slice())).collect(),
                 call_from: t.from_.iter().map(|x| hex_encode(x.0.as_slice())).collect(),
@@ -432,8 +432,8 @@ fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
             })
             .collect(),
         state_diffs: Vec::new(),
-        fields: sqd_portal_client::evm::Fields {
-            block: sqd_portal_client::evm::BlockFields {
+        fields: tiders_sqd_client::evm::Fields {
+            block: tiders_sqd_client::evm::BlockFields {
                 number: query.fields.block.number
                     || query.fields.transaction.block_number
                     || query.fields.log.block_number
@@ -463,7 +463,7 @@ fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
                 excess_blob_gas: query.fields.block.excess_blob_gas,
                 l1_block_number: query.fields.block.l1_block_number,
             },
-            transaction: sqd_portal_client::evm::TransactionFields {
+            transaction: tiders_sqd_client::evm::TransactionFields {
                 transaction_index: query.fields.transaction.transaction_index,
                 hash: query.fields.transaction.hash,
                 nonce: query.fields.transaction.nonce,
@@ -497,7 +497,7 @@ fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
                 l1_blob_base_fee_scalar: query.fields.transaction.l1_blob_base_fee_scalar,
                 l1_base_fee_scalar: query.fields.transaction.l1_base_fee_scalar,
             },
-            log: sqd_portal_client::evm::LogFields {
+            log: tiders_sqd_client::evm::LogFields {
                 log_index: query.fields.log.log_index,
                 transaction_index: query.fields.log.transaction_index,
                 transaction_hash: query.fields.log.transaction_hash,
@@ -508,7 +508,7 @@ fn evm_query_to_sqd(query: &evm::Query) -> sqd_portal_client::evm::Query {
                     || query.fields.log.topic2
                     || query.fields.log.topic3,
             },
-            trace: sqd_portal_client::evm::TraceFields {
+            trace: tiders_sqd_client::evm::TraceFields {
                 transaction_index: query.fields.trace.transaction_position,
                 trace_address: query.fields.trace.trace_address,
                 subtraces: query.fields.trace.subtraces,
@@ -558,7 +558,7 @@ pub fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<Provider
         .parse()
         .context("parse url")?;
 
-    let mut client_config = sqd_portal_client::ClientConfig::default();
+    let mut client_config = tiders_sqd_client::ClientConfig::default();
 
     if let Some(v) = cfg.max_num_retries {
         client_config.max_num_retries = v;
@@ -576,7 +576,7 @@ pub fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<Provider
         client_config.http_req_timeout_millis = v;
     }
 
-    let mut stream_config = sqd_portal_client::StreamConfig::default();
+    let mut stream_config = tiders_sqd_client::StreamConfig::default();
     stream_config.stop_on_head = cfg.stop_on_head;
 
     if let Some(head_poll_interval_millis) = cfg.head_poll_interval_millis {
@@ -587,7 +587,7 @@ pub fn start_stream(cfg: ProviderConfig, query: crate::Query) -> Result<Provider
         stream_config.buffer_size = buffer_size;
     }
 
-    let client = sqd_portal_client::Client::new(url, client_config);
+    let client = tiders_sqd_client::Client::new(url, client_config);
     let client = Arc::new(client);
     match query {
         Query::Svm(query) => {

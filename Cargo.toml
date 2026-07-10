@@ -48,11 +48,11 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # Temporary local overrides while these crates are unpublished.
 # They require manual publishing "cargo publish -p tiders-evm-schema and tiders-svm-schema" to crates.
 # Remove once tiders-sqd-client 0.1.0, tiders-rpc-client 0.2.0, and the 0.2.0 schema crates are on crates.io.
-[patch.crates-io]
-tiders-sqd-client = { path = "../sqd-portal-client/rust" }
-tiders-rpc-client = { path = "../tiders-rpc-client/rust" }
-tiders-evm-schema = { path = "evm-schema" }
-tiders-svm-schema = { path = "svm-schema" }
+# [patch.crates-io]
+# tiders-sqd-client = { path = "../sqd-portal-client/rust" }
+# tiders-rpc-client = { path = "../tiders-rpc-client/rust" }
+# tiders-evm-schema = { path = "evm-schema" }
+# tiders-svm-schema = { path = "svm-schema" }
 
 # ============================================
 # Using rust-magic-linter STANDARD PRESET so agents follows rust best practices

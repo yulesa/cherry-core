@@ -8,8 +8,9 @@ pub struct ParamInput {
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for ParamInput {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for ParamInput {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         use pyo3::types::PyAnyMethods;
 
         let name = ob.getattr("name")?.extract::<String>()?;
@@ -41,8 +42,9 @@ pub enum DynType {
 }
 
 #[cfg(feature = "pyo3")]
-impl<'py> pyo3::FromPyObject<'py> for DynType {
-    fn extract_bound(ob: &pyo3::Bound<'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for DynType {
+    type Error = pyo3::PyErr;
+    fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         use pyo3::types::PyAnyMethods;
         use pyo3::types::PyTypeMethods;
 

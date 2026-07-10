@@ -64,7 +64,7 @@ impl ResponseStream {
     }
 
     /// Returns the next batch of data, or `None` when the stream is exhausted.
-    pub async fn next(&mut self) -> PyResult<Option<BTreeMap<String, PyObject>>> {
+    pub async fn next(&mut self) -> PyResult<Option<BTreeMap<String, Py<PyAny>>>> {
         let Some(inner) = self.inner.as_mut() else {
             return Ok(None);
         };
@@ -84,7 +84,12 @@ impl ResponseStream {
 
         for (table_name, batch) in item.data {
             let batch =
-                Python::with_gil(|py| batch.to_pyarrow(py).context("map result to pyarrow"))?;
+                Python::attach(|py| {
+                    batch
+                        .to_pyarrow(py)
+                        .context("map result to pyarrow")
+                        .map(Bound::unbind)
+                })?;
 
             out.insert(table_name, batch);
         }

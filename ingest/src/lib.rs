@@ -121,7 +121,6 @@ pub enum RpcTraceMethod {
 impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for RpcTraceMethod {
     type Error = pyo3::PyErr;
     fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-
         let out: &str = ob.extract().context("read as string")?;
 
         match out {
@@ -147,7 +146,6 @@ pub enum ProviderKind {
 impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for ProviderKind {
     type Error = pyo3::PyErr;
     fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-
         let out: &str = ob.extract().context("read as string")?;
 
         match out {

@@ -277,7 +277,6 @@ impl LogKind {
 impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for LogKind {
     type Error = pyo3::PyErr;
     fn extract(ob: pyo3::Borrowed<'a, 'py, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-
         let s: &str = ob.extract().context("extract string")?;
 
         Ok(Self::from_str(s).context("from str")?)

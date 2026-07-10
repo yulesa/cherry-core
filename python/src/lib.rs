@@ -111,7 +111,10 @@ fn cast(
 
     let batch = baselib::cast::cast(&map, &batch, allow_cast_fail).context("cast")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -129,7 +132,9 @@ fn cast_schema(
     let schema = baselib::cast::cast_schema(&map, &schema).context("cast")?;
 
     Ok(schema
-        .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -149,7 +154,10 @@ fn cast_by_type(
     let batch = baselib::cast::cast_by_type(&batch, &from_type, &to_type, allow_cast_fail)
         .context("cast")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -169,7 +177,9 @@ fn cast_schema_by_type(
         baselib::cast::cast_schema_by_type(&schema, &from_type, &to_type).context("cast")?;
 
     Ok(schema
-        .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -178,7 +188,10 @@ fn hex_encode(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<PyAny>> {
 
     let batch = baselib::cast::hex_encode::<false>(&batch).context("encode to hex")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -187,7 +200,10 @@ fn base58_encode(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<PyAny>
 
     let batch = baselib::cast::base58_encode(&batch).context("encode to base58")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -196,7 +212,10 @@ fn prefix_hex_encode(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<Py
 
     let batch = baselib::cast::hex_encode::<true>(&batch).context("encode to prefix hex")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -205,7 +224,10 @@ fn u256_to_binary(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<PyAny
 
     let batch = baselib::cast::u256_to_binary(&batch).context("map u256 columns to binary")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -215,7 +237,10 @@ fn large_ints_to_binary(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py
     let batch =
         baselib::cast::large_ints_to_binary(&batch).context("map large int columns to binary")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -235,7 +260,9 @@ fn base58_encode_column(col: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<P
 
     Ok(col
         .into_data()
-        .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -263,13 +290,17 @@ fn hex_encode_column_impl<const PREFIXED: bool>(
         let col = baselib::cast::hex_encode_column::<PREFIXED, i32>(&col);
         Ok(col
             .into_data()
-            .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+            .to_pyarrow(py)
+            .context("map result back to pyarrow")?
+            .unbind())
     } else if col.data_type() == &DataType::LargeBinary {
         let col = LargeBinaryArray::from(col);
         let col = baselib::cast::hex_encode_column::<PREFIXED, i64>(&col);
         Ok(col
             .into_data()
-            .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+            .to_pyarrow(py)
+            .context("map result back to pyarrow")?
+            .unbind())
     } else {
         Err(anyhow!(
             "unexpected data type {}. Expected Binary or LargeBinary",
@@ -292,13 +323,17 @@ fn base58_decode_column(col: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<P
         let col = baselib::cast::base58_decode_column(&col).context("base58 decode")?;
         Ok(col
             .into_data()
-            .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+            .to_pyarrow(py)
+            .context("map result back to pyarrow")?
+            .unbind())
     } else if col.data_type() == &DataType::LargeUtf8 {
         let col = LargeStringArray::from(col);
         let col = baselib::cast::base58_decode_column(&col).context("base58 decode")?;
         Ok(col
             .into_data()
-            .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+            .to_pyarrow(py)
+            .context("map result back to pyarrow")?
+            .unbind())
     } else {
         Err(anyhow!(
             "unexpected data type {}. Expected String or LargeString",
@@ -333,13 +368,17 @@ fn hex_decode_column_impl<const PREFIXED: bool>(
         let col = baselib::cast::hex_decode_column::<PREFIXED, i32>(&col).context("hex decode")?;
         Ok(col
             .into_data()
-            .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+            .to_pyarrow(py)
+            .context("map result back to pyarrow")?
+            .unbind())
     } else if col.data_type() == &DataType::LargeUtf8 {
         let col = LargeStringArray::from(col);
         let col = baselib::cast::hex_decode_column::<PREFIXED, i64>(&col).context("hex decode")?;
         Ok(col
             .into_data()
-            .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+            .to_pyarrow(py)
+            .context("map result back to pyarrow")?
+            .unbind())
     } else {
         Err(anyhow!(
             "unexpected data type {}. Expected String or LargeString",
@@ -366,7 +405,9 @@ fn u256_column_from_binary(col: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<P
 
     Ok(col
         .into_data()
-        .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -390,7 +431,9 @@ fn u256_column_to_binary(col: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<
 
     Ok(col
         .into_data()
-        .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -415,7 +458,10 @@ fn svm_decode_instructions(
     )
     .context("decode instruction batch")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -435,7 +481,10 @@ fn svm_decode_logs(
         baselib::svm_decode::decode_logs_batch(&log_signature, &batch, allow_decode_fail, hstack)
             .context("decode log batch")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -448,7 +497,9 @@ fn instruction_signature_to_arrow_schema(
         .context("signature to schema")?;
 
     Ok(schema
-        .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -479,7 +530,10 @@ fn evm_decode_call_inputs(
     )
     .context("decode cal inputs")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -510,7 +564,10 @@ fn evm_decode_call_outputs(
     )
     .context("decode cal outputs")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -537,7 +594,10 @@ fn evm_decode_events(
     )
     .context("decode events")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -552,7 +612,9 @@ fn evm_event_signature_to_arrow_schema(
             .context("signature to schema")?;
 
     Ok(schema
-        .to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]
@@ -648,7 +710,10 @@ fn flatten_batch(batch: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<PyAny>
 
     let batch = baselib::cast::flatten_record_batch(&batch).context("flatten batch")?;
 
-    Ok(batch.to_pyarrow(py).context("map result back to pyarrow")?.unbind())
+    Ok(batch
+        .to_pyarrow(py)
+        .context("map result back to pyarrow")?
+        .unbind())
 }
 
 #[pyfunction]

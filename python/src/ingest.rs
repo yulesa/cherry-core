@@ -83,13 +83,12 @@ impl ResponseStream {
         let mut out = BTreeMap::new();
 
         for (table_name, batch) in item.data {
-            let batch =
-                Python::attach(|py| {
-                    batch
-                        .to_pyarrow(py)
-                        .context("map result to pyarrow")
-                        .map(Bound::unbind)
-                })?;
+            let batch = Python::attach(|py| {
+                batch
+                    .to_pyarrow(py)
+                    .context("map result to pyarrow")
+                    .map(Bound::unbind)
+            })?;
 
             out.insert(table_name, batch);
         }
